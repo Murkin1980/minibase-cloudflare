@@ -1,0 +1,18 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "minibase-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "CONTROL_DB",
+      "database_name": "minibase-control",
+      "database_id": "REPLACE_WITH_CONTROL_D1_ID",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

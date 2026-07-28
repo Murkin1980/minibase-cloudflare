@@ -1,0 +1,38 @@
+export interface D1Result<T = Record<string, unknown>> {
+  results?: T[];
+  success: boolean;
+}
+
+export interface D1PreparedStatement {
+  bind(...values: unknown[]): D1PreparedStatement;
+  first<T = Record<string, unknown>>(): Promise<T | null>;
+  run(): Promise<D1Result>;
+}
+
+export interface D1Database {
+  prepare(sql: string): D1PreparedStatement;
+}
+
+export interface MiniBaseEnv {
+  CONTROL_DB: D1Database;
+  MINIBASE_MANAGEMENT_KEY_HASH: string;
+  CLOUDFLARE_ACCOUNT_ID: string;
+  CLOUDFLARE_D1_API_TOKEN: string;
+}
+
+export interface CreateProjectRequest {
+  slug: string;
+  name: string;
+  region?: "weur" | "eeur" | "apac";
+}
+
+export interface CloudflareD1 {
+  uuid: string;
+  name: string;
+}
+
+export interface CloudflareResponse<T> {
+  success: boolean;
+  result: T;
+  errors?: Array<{ message: string }>;
+}

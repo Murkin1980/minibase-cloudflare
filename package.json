@@ -1,0 +1,25 @@
+{
+  "name": "minibase-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --pretty false",
+    "test": "vitest run",
+    "build": "wrangler deploy --dry-run --config wrangler.example.jsonc",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.2",
+    "eslint": "9.39.2",
+    "globals": "16.3.0",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "3.2.7",
+    "wrangler": "4.114.0"
+  },
+  "overrides": {
+    "minimatch": "10.2.4"
+  }
+}

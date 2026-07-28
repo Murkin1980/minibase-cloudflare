@@ -1,0 +1,35 @@
+# MiniBase
+
+Компактный multi-project BaaS на Cloudflare Workers, D1 и R2.
+
+Статус: MB0/MB1 — архитектурный каркас и control plane. Production deployment
+ещё не создан.
+
+## Возможности каркаса
+
+- management API `POST /v1/projects`;
+- идемпотентное создание отдельной D1-базы на проект;
+- `mb_publishable_*`, `mb_secret_*` и отдельный `mb_management_*`;
+- хэширование ключей, scope, отзыв и аудит в управляющей базе;
+- применение начальной схемы через Cloudflare D1 API;
+- состояния provisioning и безопасный повтор операции.
+
+## Локальная проверка
+
+```bash
+npm install
+npm run lint
+npm run typecheck
+npm test
+```
+
+Для реального развёртывания скопируйте `wrangler.example.jsonc` в
+`wrangler.jsonc`, создайте управляющую D1 и задайте секреты через Wrangler.
+Никогда не помещайте Cloudflare API token или management key в Git.
+
+## Модель подключения
+
+Клиентское приложение получает только URL API и `mb_publishable_*`.
+`mb_secret_*` допустим исключительно в доверенном backend. Создание проекта
+выполняется control plane с `mb_management_*`; Cloudflare API token остаётся
+секретом Worker.
