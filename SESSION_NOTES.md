@@ -353,3 +353,8 @@ No binding, rule, deployment, or paid resource was created.
 - Added acceptance coverage proving launch stays blocked without `wrangler.jsonc`.
 
 MB8 remains intentionally incomplete pending explicit production approval.
+
+## 2026-07-29 — Iteration 24: Windows readiness CLI correction
+
+- Corrected direct-entry detection with canonical Windows file URLs.
+- Added a subprocess acceptance test for JSON output and blocked exit code 2.

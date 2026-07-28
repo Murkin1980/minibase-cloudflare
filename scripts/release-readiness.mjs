@@ -1,4 +1,6 @@
 import { access, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const requiredDocs = [
   "docs/CLIENT_SDK.md",
@@ -31,7 +33,7 @@ export async function inspectReleaseReadiness(root = new URL("../", import.meta.
   };
 }
 
-if (process.argv[1] && import.meta.url === new URL(process.argv[1], "file:").href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const result = await inspectReleaseReadiness();
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   process.exitCode = result.status === "ready" ? 0 : 2;
