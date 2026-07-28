@@ -17,6 +17,7 @@ try {
     "migrations/0001_control_plane.sql",
     "migrations/0002_management_keys.sql",
     "migrations/0003_provisioning_recovery.sql",
+    "migrations/0004_data_keys.sql",
   ]) {
     const sql = await readFile(new URL(`../${migration}`, import.meta.url), "utf8");
     for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean)) {
@@ -50,6 +51,11 @@ try {
   const columnNames = new Set(jobColumns.results.map((column) => column.name));
   for (const expected of ["request_hash", "d1_database_id", "rollback_status", "attempt_count"]) {
     assert.ok(columnNames.has(expected), `missing provisioning_jobs.${expected}`);
+  }
+  const keyColumns = await db.prepare("PRAGMA table_info(api_keys)").all();
+  const keyColumnNames = new Set(keyColumns.results.map((column) => column.name));
+  for (const expected of ["name", "last_used_at", "rotated_from_key_id"]) {
+    assert.ok(keyColumnNames.has(expected), `missing api_keys.${expected}`);
   }
 
   const atomicHash = "b".repeat(64);

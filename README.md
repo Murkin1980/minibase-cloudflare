@@ -68,6 +68,19 @@ provisioning job выполняется атомарным D1 batch. Если у
 
 Неизвестные исключения и ответы Cloudflare не возвращаются клиенту дословно.
 
+## Records data API
+
+Data keys выбирают проект только через хэш в control D1. Клиент не передаёт
+database ID и никогда не получает Cloudflare token.
+
+- `GET /v1/data/{collection}` — список до 100 записей (`data:read`);
+- `GET /v1/data/{collection}/{id}` — одна запись (`data:read`);
+- `PUT /v1/data/{collection}/{id}` — upsert JSON-объекта (`data:write`);
+- `DELETE /v1/data/{collection}/{id}` — удаление (`data:write`).
+
+Collection и record ID проходят allowlist-валидацию, а SQL и database UUID не
+принимаются из публичного request body.
+
 ## Модель подключения
 
 Клиентское приложение получает только URL API и `mb_publishable_*`.

@@ -1,5 +1,16 @@
 import { listAuditEvents, parseAuditQuery } from "./audit";
 import type { MiniBaseEnv } from "./contracts";
+import {
+  deleteRecord,
+  getRecord,
+  listRecords,
+  parseListQuery,
+  putRecord,
+  validateCollection,
+  validateRecordData,
+  validateRecordId,
+} from "./data-api";
+import { authenticateDataKey } from "./data-auth";
 import { errorResponse } from "./errors";
 import { readJsonBounded } from "./http";
 import {
@@ -19,7 +30,7 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.5.0" });
+      return json({ service: "minibase", status: "ok", version: "0.6.0" });
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
       const actor = await authenticateManagementKey(env, request, "projects:write");
@@ -60,6 +71,36 @@ export default {
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
         return json(await listAuditEvents(env, parseAuditQuery(url)));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    const dataMatch = url.pathname.match(/^\/v1\/data\/([^/]+)(?:\/([^/]+))?$/);
+    if (dataMatch) {
+      try {
+        const collection = validateCollection(decodeURIComponent(dataMatch[1]));
+        const id = dataMatch[2] ? validateRecordId(decodeURIComponent(dataMatch[2])) : null;
+        const requiredScope = request.method === "GET" ? "data:read" : "data:write";
+        const principal = await authenticateDataKey(env, request, requiredScope);
+        if (!principal) return errorResponse(new Error("unauthorized"));
+        if (request.method === "GET" && id) return json(await getRecord(env, principal, collection, id));
+        if (request.method === "GET" && !id) {
+          return json(await listRecords(env, principal, collection, parseListQuery(url)));
+        }
+        if (request.method === "PUT" && id) {
+          return json(await putRecord(
+            env,
+            principal,
+            collection,
+            id,
+            validateRecordData(await readJsonBounded(request)),
+          ));
+        }
+        if (request.method === "DELETE" && id) {
+          await deleteRecord(env, principal, collection, id);
+          return new Response(null, { status: 204 });
+        }
+        return errorResponse(new Error("not_found"));
       } catch (error) {
         return errorResponse(error);
       }

@@ -2,6 +2,7 @@ const statusByCode: Record<string, number> = {
   unauthorized: 401,
   not_found: 404,
   management_key_not_found: 404,
+  record_not_found: 404,
   content_type_must_be_application_json: 415,
   request_body_too_large: 413,
   idempotency_key_reused_with_different_request: 409,
@@ -22,6 +23,9 @@ const clientErrorCodes = new Set([
   "invalid_limit",
   "invalid_before",
   "active_key_self_revoke_forbidden",
+  "invalid_collection",
+  "invalid_record_id",
+  "invalid_record_data",
 ]);
 
 export function errorResponse(error: unknown, fallbackCode = "internal_error"): Response {

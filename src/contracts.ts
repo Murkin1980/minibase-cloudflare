@@ -26,6 +26,19 @@ export interface ManagementPrincipal {
   scopes: string[];
 }
 
+export interface DataPrincipal {
+  keyId: string;
+  projectId: string;
+  databaseId: string;
+  kind: "publishable" | "secret";
+  scopes: string[];
+}
+
+export interface D1HttpQueryResult<T = Record<string, unknown>> {
+  results: T[];
+  success: boolean;
+}
+
 export interface CreateManagementKeyRequest {
   name: string;
   scopes: string[];

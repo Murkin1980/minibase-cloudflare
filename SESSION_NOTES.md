@@ -131,3 +131,20 @@ resource has been approved or created.
 - Added `ROADMAP.md` as the persistent visual progress source.
 
 No production resource or paid service was created.
+
+## 2026-07-29 — Iteration 7: authenticated records data plane
+
+### Completed
+
+- Added control-D1 metadata for data-key last use and rotation lineage.
+- Added publishable/secret key authentication with project status, scope,
+  expiry, and revocation enforcement.
+- Added a server-only D1 HTTP client that derives database UUID from control D1.
+- Added generic JSON records list/get/upsert/delete operations with parameterized
+  SQL, bounded pagination, and strict collection/record ID validation.
+- Added the `mb_records` schema to newly provisioned project databases.
+
+### Boundary
+
+This iteration is locally tested but does not call a real Cloudflare D1. CORS,
+data-key management endpoints, and full Worker integration tests remain MB3 work.

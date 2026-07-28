@@ -27,7 +27,8 @@ export function managementKeyRecordIsAuthorized(
   now: Date,
 ): boolean {
   if (!row || row.revoked_at) return false;
-  if (row.expires_at && new Date(row.expires_at) <= now) return false;
+  const expiry = row.expires_at ? Date.parse(row.expires_at) : null;
+  if (expiry !== null && (!Number.isFinite(expiry) || expiry <= now.getTime())) return false;
   return parseScopes(row.scopes).includes(requiredScope);
 }
 

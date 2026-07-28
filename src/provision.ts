@@ -4,6 +4,15 @@ import { randomToken, sha256 } from "./security";
 const projectSchema = [
   "CREATE TABLE IF NOT EXISTS mb_schema_versions (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
   "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (1, datetime('now'))",
+  `CREATE TABLE IF NOT EXISTS mb_records (
+    collection TEXT NOT NULL,
+    id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (collection, id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS mb_records_collection_updated_idx ON mb_records(collection, updated_at DESC)",
 ];
 
 interface ExistingJob {
