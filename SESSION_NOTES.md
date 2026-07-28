@@ -61,7 +61,22 @@ dry-run build. GitHub Actions are intentionally not used.
 
 ### Remaining MB2 work
 
-- Add audit-log read API and integration-level D1 tests.
 - Make remote D1 provisioning and key rotation resilient to partial failures and
   concurrent requests.
-- Add explicit API error taxonomy and bounded request-body handling.
+- Add integration-level D1 tests and explicit API error taxonomy.
+
+## 2026-07-28 — Iteration 3: audit API and HTTP boundaries
+
+### Completed
+
+- Added `GET /v1/audit-events` guarded by `audit:read`.
+- Added bounded cursor-style audit pagination with a maximum page size of 100.
+- Added streaming, size-enforced JSON request parsing with a 64 KiB default.
+- Rejected missing or incorrect JSON content types and malformed JSON with stable
+  machine-readable error codes.
+- Added tests for body limits, content type, and audit query validation.
+
+### Safety boundary
+
+Audit responses contain key IDs and metadata but never key hashes, raw keys, or
+Cloudflare credentials. No remote resource was created.

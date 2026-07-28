@@ -1,4 +1,6 @@
 import type { MiniBaseEnv } from "./contracts";
+import { listAuditEvents, parseAuditQuery } from "./audit";
+import { readJsonBounded } from "./http";
 import {
   authenticateManagementKey,
   createManagementKey,
@@ -16,7 +18,7 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.2.0" });
+      return json({ service: "minibase", status: "ok", version: "0.3.0" });
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
       const actor = await authenticateManagementKey(env, request, "projects:write");
@@ -26,7 +28,7 @@ export default {
         return json({ error: "A valid Idempotency-Key is required." }, 400);
       }
       try {
-        const input = parseCreateProject(await request.json());
+        const input = parseCreateProject(await readJsonBounded(request));
         return json(await provisionProject(env, input, idempotencyKey, actor.keyId), 201);
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
@@ -36,7 +38,7 @@ export default {
       const actor = await authenticateManagementKey(env, request, "keys:write");
       if (!actor) return json({ error: "unauthorized" }, 401);
       try {
-        return json(await createManagementKey(env, parseCreateManagementKey(await request.json()), actor), 201);
+        return json(await createManagementKey(env, parseCreateManagementKey(await readJsonBounded(request)), actor), 201);
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
       }
@@ -48,6 +50,15 @@ export default {
       try {
         await revokeManagementKey(env, revokeMatch[1], actor);
         return new Response(null, { status: 204 });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/v1/audit-events") {
+      const actor = await authenticateManagementKey(env, request, "audit:read");
+      if (!actor) return json({ error: "unauthorized" }, 401);
+      try {
+        return json(await listAuditEvents(env, parseAuditQuery(url)));
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : "invalid_request" }, 400);
       }

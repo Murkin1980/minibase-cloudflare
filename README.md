@@ -48,6 +48,11 @@ Management endpoints:
 - `POST /v1/management-keys` — выпуск или ротация, scope `keys:write`;
 - `DELETE /v1/management-keys/{id}` — отзыв, scope `keys:write`;
 - `POST /v1/projects` — provisioning, scope `projects:write`.
+- `GET /v1/audit-events?limit=50&before=<ISO-8601>` — журнал аудита,
+  scope `audit:read`.
+
+JSON request bodies ограничены 64 KiB и должны иметь
+`Content-Type: application/json`.
 
 ## Модель подключения
 
