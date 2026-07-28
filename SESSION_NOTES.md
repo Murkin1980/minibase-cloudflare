@@ -117,3 +117,17 @@ will not silently create a duplicate database.
 MB2 control plane is complete for local acceptance. Production provisioning is
 still intentionally unverified because no production Worker or Cloudflare
 resource has been approved or created.
+
+## 2026-07-29 — Iteration 6: MB3 routing decision
+
+### Completed
+
+- Verified that ordinary D1 bindings are deployment-time capabilities.
+- Rejected paid Workers for Platforms and a shared tenant database.
+- Accepted a free-MVP data path using server-side D1 HTTP API calls after
+  control-plane key authentication and project resolution.
+- Documented security constraints and criteria for revisiting the decision in
+  `docs/ADR-0001-data-plane-routing.md`.
+- Added `ROADMAP.md` as the persistent visual progress source.
+
+No production resource or paid service was created.
