@@ -1,6 +1,6 @@
 {
   "name": "minibase-cloudflare",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,9 @@
     "build": "wrangler deploy --dry-run --config wrangler.example.jsonc",
     "bootstrap:key": "node scripts/create-bootstrap-key.mjs",
     "migration:checksum": "node scripts/migration-checksum.mjs",
-    "check": "npm run lint && npm run typecheck && npm test && npm run test:d1 && npm run test:worker && npm run build"
+    "release:readiness": "node scripts/release-readiness.mjs",
+    "test:release": "node scripts/test-release-readiness.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:d1 && npm run test:release && npm run test:worker && npm run build"
   },
   "devDependencies": {
     "@eslint/js": "9.39.2",

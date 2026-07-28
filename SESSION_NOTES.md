@@ -344,3 +344,12 @@ No rate-limit binding or production configuration was created.
 - Documented the explicit production approval gate.
 
 No binding, rule, deployment, or paid resource was created.
+
+## 2026-07-29 — Iteration 23: launch-readiness package
+
+- Added an owner production-decision template.
+- Added ordered launch, abort, and rollback runbook.
+- Added a local machine-readable readiness gate.
+- Added acceptance coverage proving launch stays blocked without `wrangler.jsonc`.
+
+MB8 remains intentionally incomplete pending explicit production approval.

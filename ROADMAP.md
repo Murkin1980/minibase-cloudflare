@@ -8,9 +8,9 @@ MB4 R2 files        [##########] 100%
 MB5 Supabase move   [##########] 100%
 MB6 Client SDK      [##########] 100%
 MB7 Hardening       [##########] 100%
-MB8 Launch          [----------]   0%
+MB8 Launch          [#####-----]  50%
 
-Overall             [#########-]  95%
+Overall             [##########]  98%
 ```
 
 ## Gates
@@ -26,5 +26,5 @@ Overall             [#########-]  95%
 - MB6: locally accepted typed records/files client with strict key separation.
 - MB7: locally accepted response security and optional hashed-identity abuse
   control. Production binding values still require owner approval.
-- MB8: requires an explicit owner decision before any production resource is
-  created.
+- MB8: runbook and automated readiness gate complete. Actual resources, secrets,
+  smoke tests, and launch require an explicit owner decision.
