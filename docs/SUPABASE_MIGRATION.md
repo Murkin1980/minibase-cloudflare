@@ -25,6 +25,22 @@ Auth migration supports only:
 
 Both strategies avoid manually copying `auth.users.encrypted_password`.
 
+### Auth identity export
+
+The sanitizer allowlists only source user UUID, normalized email/phone,
+confirmation timestamp, creation timestamp, and required handoff action. It
+does not copy `encrypted_password`, access/refresh/recovery/confirmation tokens,
+sessions, OTPs, secrets, `user_metadata`, or `app_metadata`.
+
+`user_metadata` is never used for authorization because it is user-editable.
+Application profile tables and authorization assignments require separate,
+explicit transforms and review.
+
+Password-reset identities remain unable to authenticate until a future verified
+reset flow establishes a new MiniBase credential. Dual-auth handoff requires a
+fresh, server-verified Supabase authentication event; possession of an exported
+row is never accepted as proof.
+
 ## PostgreSQL to SQLite transform
 
 Migration uses a declarative catalog export rather than executing a raw

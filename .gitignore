@@ -4,4 +4,5 @@ node_modules/
 wrangler.jsonc
 coverage/
 dist/
+work/
 *.log

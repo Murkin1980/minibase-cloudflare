@@ -267,3 +267,15 @@ No Supabase project was connected or modified.
 
 Raw PostgreSQL dumps, functions, triggers, policies, and extensions are not
 executed as SQLite.
+
+## 2026-07-29 — Iteration 16: safe Supabase Auth identity export
+
+### Completed
+
+- Added an allowlist-only `auth.users` sanitizer.
+- Normalize verified email/phone contacts and timestamps.
+- Recursively detect credential, token, session, OTP, nonce, and secret fields.
+- Exclude both user and app metadata from automatic authorization migration.
+- Mark every identity as requiring password reset or fresh dual-auth handoff.
+
+No Supabase password hash or active credential is accepted as migration proof.
