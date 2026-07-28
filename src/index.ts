@@ -21,6 +21,7 @@ import {
   revokeManagementKey,
 } from "./management-keys";
 import { provisionProject } from "./provision";
+import { applyProjectSchema } from "./project-schema";
 import { parseOrigins, replaceProjectOrigins } from "./project-origins";
 import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
 
@@ -33,7 +34,7 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.8.0" });
+      return json({ service: "minibase", status: "ok", version: "0.9.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/data\//.test(url.pathname)) {
       return preflightResponse(request);
@@ -111,6 +112,16 @@ export default {
           return new Response(null, { status: 204 });
         }
         return errorResponse(new Error("not_found"));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    const schemaMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/schema\/apply$/);
+    if (request.method === "POST" && schemaMatch) {
+      const actor = await authenticateManagementKey(env, request, "projects:write");
+      if (!actor) return errorResponse(new Error("unauthorized"));
+      try {
+        return json(await applyProjectSchema(env, schemaMatch[1], actor.keyId));
       } catch (error) {
         return errorResponse(error);
       }

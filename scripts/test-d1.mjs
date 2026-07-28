@@ -19,6 +19,7 @@ try {
     "migrations/0003_provisioning_recovery.sql",
     "migrations/0004_data_keys.sql",
     "migrations/0005_project_origins.sql",
+    "migrations/0006_project_schema_version.sql",
   ]) {
     const sql = await readFile(new URL(`../${migration}`, import.meta.url), "utf8");
     for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean)) {
@@ -62,6 +63,8 @@ try {
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_origins'",
   ).first();
   assert.equal(originTable.name, "project_origins");
+  const projectColumns = await db.prepare("PRAGMA table_info(projects)").all();
+  assert.ok(projectColumns.results.some((column) => column.name === "data_schema_version"));
 
   const atomicHash = "b".repeat(64);
   await assert.rejects(db.batch([

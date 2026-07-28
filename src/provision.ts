@@ -1,19 +1,9 @@
 import type { CloudflareD1, CloudflareResponse, CreateProjectRequest, MiniBaseEnv } from "./contracts";
+import { projectSchemaMigrations } from "./project-schema";
 import { randomToken, sha256 } from "./security";
 
-const projectSchema = [
-  "CREATE TABLE IF NOT EXISTS mb_schema_versions (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
-  "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (1, datetime('now'))",
-  `CREATE TABLE IF NOT EXISTS mb_records (
-    collection TEXT NOT NULL,
-    id TEXT NOT NULL,
-    data TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (collection, id)
-  )`,
-  "CREATE INDEX IF NOT EXISTS mb_records_collection_updated_idx ON mb_records(collection, updated_at DESC)",
-];
+const projectSchema = projectSchemaMigrations.flatMap((migration) => migration.statements);
+const currentProjectSchemaVersion = projectSchemaMigrations.at(-1)?.version ?? 0;
 
 interface ExistingJob {
   project_id: string;
@@ -121,8 +111,10 @@ export async function provisionProject(
         "INSERT INTO api_keys (id, project_id, kind, key_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       ).bind(crypto.randomUUID(), projectId, "secret", await sha256(secretKey), "project:admin", now),
       env.CONTROL_DB.prepare(
-        "UPDATE projects SET status = 'active', d1_database_id = ?, updated_at = ? WHERE id = ?",
-      ).bind(databaseId, completedAt, projectId),
+        `UPDATE projects
+            SET status = 'active', d1_database_id = ?, data_schema_version = ?, updated_at = ?
+          WHERE id = ?`,
+      ).bind(databaseId, currentProjectSchemaVersion, completedAt, projectId),
       env.CONTROL_DB.prepare(
         "UPDATE provisioning_jobs SET status = 'completed', updated_at = ? WHERE idempotency_key = ?",
       ).bind(completedAt, idempotencyKey),

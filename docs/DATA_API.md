@@ -19,3 +19,9 @@ only their SHA-256 hashes.
 These operations require a management key with `keys:write`. A raw key is
 returned once at creation. Publishable keys may use only `data:read` and
 `data:write`; `project:admin` is restricted to secret keys.
+
+## Project schema
+
+`POST /v1/projects/{projectId}/schema/apply` applies only missing, ordered,
+idempotent project-schema versions. It requires management scope
+`projects:write`. Current schema version is also tracked in the control D1.

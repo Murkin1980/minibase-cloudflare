@@ -33,6 +33,7 @@ const clientErrorCodes = new Set([
   "insecure_origin",
   "invalid_origins",
   "invalid_key_kind",
+  "invalid_schema_version",
 ]);
 
 export function errorResponse(error: unknown, fallbackCode = "internal_error"): Response {

@@ -177,3 +177,16 @@ bypass authentication or the origin check on the actual request.
 
 No existing project key is revoked until its replacement and audit record can be
 committed in the same D1 batch.
+
+## 2026-07-29 — Iteration 10: versioned project schema
+
+### Completed
+
+- Replaced inline provisioning DDL with an ordered project-schema registry.
+- Track each active project's applied data-schema version in control D1.
+- Added an idempotent management endpoint to apply only missing schema versions.
+- New project provisioning and later upgrades use the same schema source.
+- Added ordering, idempotency, and destructive-statement guard tests.
+
+Remote D1 schema calls are not claimed as production-verified. Every current
+statement is idempotent so interrupted upgrades can be safely requested again.
