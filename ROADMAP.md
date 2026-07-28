@@ -7,10 +7,10 @@ MB3 Data plane      [##########] 100%
 MB4 R2 files        [##########] 100%
 MB5 Supabase move   [##########] 100%
 MB6 Client SDK      [##########] 100%
-MB7 Hardening       [----------]   0%
+MB7 Hardening       [#####-----]  50%
 MB8 Launch          [----------]   0%
 
-Overall             [#########-]  85%
+Overall             [#########-]  90%
 ```
 
 ## Gates
@@ -24,5 +24,7 @@ Overall             [#########-]  85%
   safe Auth handoff, idempotent imports, verification, and rollback evidence.
   No real Supabase or Cloudflare migration has been executed.
 - MB6: locally accepted typed records/files client with strict key separation.
+- MB7: uniform security/correlation headers complete; abuse controls and final
+  security review remain.
 - MB8: requires an explicit owner decision before any production resource is
   created.

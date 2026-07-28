@@ -325,3 +325,13 @@ The client was tested only with mocked fetch; no Worker deployment was created.
 - Apply the Worker-compatible traversal-safe path contract in the client.
 
 MB6 is locally accepted; package registry publication remains out of scope.
+
+## 2026-07-29 — Iteration 21: uniform HTTP hardening
+
+- Added correlation IDs with strict validation and generated fallback UUIDs.
+- Added CSP, frame, MIME sniffing, referrer, permissions, and no-store defaults
+  to every Worker response.
+- Preserved streaming response bodies and existing stricter cache directives.
+- Added a top-level sanitized fallback for otherwise uncaught exceptions.
+
+No rate-limit binding or production configuration was created.

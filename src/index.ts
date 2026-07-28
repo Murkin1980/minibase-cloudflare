@@ -26,17 +26,18 @@ import { provisionProject } from "./provision";
 import { applyProjectSchema } from "./project-schema";
 import { parseOrigins, replaceProjectOrigins } from "./project-origins";
 import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
+import { hardenResponse, resolveRequestId } from "./response-security";
 
 const json = (body: unknown, status = 200) => Response.json(body, {
   status,
   headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
 });
 
-export default {
+const application = {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.19.0" });
+      return json({ service: "minibase", status: "ok", version: "0.20.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
@@ -198,5 +199,16 @@ export default {
       }
     }
     return errorResponse(new Error("not_found"));
+  },
+};
+
+export default {
+  async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
+    const requestId = resolveRequestId(request);
+    try {
+      return hardenResponse(await application.fetch(request, env), requestId);
+    } catch {
+      return hardenResponse(errorResponse(new Error("internal_error")), requestId);
+    }
   },
 };
