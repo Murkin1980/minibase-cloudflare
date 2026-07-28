@@ -19,7 +19,12 @@ async function cloudflareRequest<T>(env: MiniBaseEnv, path: string, init: Reques
   return payload.result;
 }
 
-export async function provisionProject(env: MiniBaseEnv, input: CreateProjectRequest, idempotencyKey: string) {
+export async function provisionProject(
+  env: MiniBaseEnv,
+  input: CreateProjectRequest,
+  idempotencyKey: string,
+  actorKeyId: string,
+) {
   const existing = await env.CONTROL_DB.prepare(
     "SELECT project_id, status FROM provisioning_jobs WHERE idempotency_key = ?",
   ).bind(idempotencyKey).first<{ project_id: string; status: string }>();
@@ -64,8 +69,10 @@ export async function provisionProject(env: MiniBaseEnv, input: CreateProjectReq
       "UPDATE provisioning_jobs SET status = 'completed', updated_at = ? WHERE idempotency_key = ?",
     ).bind(new Date().toISOString(), idempotencyKey).run();
     await env.CONTROL_DB.prepare(
-      "INSERT INTO audit_events (id, project_id, action, created_at) VALUES (?, ?, 'project.provisioned', ?)",
-    ).bind(crypto.randomUUID(), projectId, new Date().toISOString()).run();
+      `INSERT INTO audit_events
+        (id, project_id, action, created_at, actor_key_id, outcome)
+       VALUES (?, ?, 'project.provisioned', ?, ?, 'success')`,
+    ).bind(crypto.randomUUID(), projectId, new Date().toISOString(), actorKeyId).run();
 
     return { projectId, status: "active", publishableKey, secretKey, replayed: false };
   } catch (error) {

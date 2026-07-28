@@ -15,9 +15,20 @@ export interface D1Database {
 
 export interface MiniBaseEnv {
   CONTROL_DB: D1Database;
-  MINIBASE_MANAGEMENT_KEY_HASH: string;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_D1_API_TOKEN: string;
+}
+
+export interface ManagementPrincipal {
+  keyId: string;
+  scopes: string[];
+}
+
+export interface CreateManagementKeyRequest {
+  name: string;
+  scopes: string[];
+  expiresAt?: string;
+  rotateFromKeyId?: string;
 }
 
 export interface CreateProjectRequest {

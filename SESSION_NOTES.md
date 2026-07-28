@@ -37,3 +37,31 @@ scoped record in D1.
 
 Run `npm run check`. It executes lint, TypeScript checking, Vitest, and a Wrangler
 dry-run build. GitHub Actions are intentionally not used.
+
+## 2026-07-28 — Iteration 2: D1-backed management keys
+
+### Completed
+
+- Added migration `0002_management_keys.sql` with hashed management keys,
+  scopes, expiry, revocation, rotation linkage, and last-use timestamps.
+- Replaced the single Worker-secret management hash with D1 lookup.
+- Added scoped authentication and denied-auth audit records.
+- Added issue/rotate and revoke management-key endpoints.
+- Added an offline bootstrap-key generator that emits a one-time key and SQL
+  containing only its SHA-256 hash.
+- Linked successful project provisioning audit events to the acting management
+  key.
+
+### Safety boundary
+
+- Raw management keys are returned or printed once and are never persisted.
+- The Cloudflare API token remains a Worker secret and is never returned.
+- Bootstrap generation is offline; no D1, R2, Worker, or paid resource is
+  created by it.
+
+### Remaining MB2 work
+
+- Add audit-log read API and integration-level D1 tests.
+- Make remote D1 provisioning and key rotation resilient to partial failures and
+  concurrent requests.
+- Add explicit API error taxonomy and bounded request-body handling.

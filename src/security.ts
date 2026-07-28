@@ -5,13 +5,15 @@ export async function sha256(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function randomToken(prefix: "mb_publishable_" | "mb_secret_"): string {
+export type MiniBaseKeyPrefix = "mb_publishable_" | "mb_secret_" | "mb_management_";
+
+export function randomToken(prefix: MiniBaseKeyPrefix): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const body = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return `${prefix}${body}`;
 }
 
-function constantTimeHexEqual(left: string, right: string): boolean {
+export function constantTimeHexEqual(left: string, right: string): boolean {
   const leftBytes = encoder.encode(left);
   const rightBytes = encoder.encode(right);
   let difference = leftBytes.length ^ rightBytes.length;
@@ -20,10 +22,4 @@ function constantTimeHexEqual(left: string, right: string): boolean {
     difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
   }
   return difference === 0;
-}
-
-export async function managementKeyIsValid(request: Request, expectedHash: string): Promise<boolean> {
-  const authorization = request.headers.get("authorization");
-  if (!authorization?.startsWith("Bearer mb_management_")) return false;
-  return constantTimeHexEqual(await sha256(authorization.slice(7)), expectedHash);
 }

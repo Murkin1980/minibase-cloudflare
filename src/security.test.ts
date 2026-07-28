@@ -1,24 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { managementKeyIsValid, randomToken, sha256 } from "./security";
-import { parseCreateProject } from "./validation";
+import { managementKeyRecordIsAuthorized } from "./management-keys";
+import { randomToken } from "./security";
+import { parseCreateManagementKey, parseCreateProject } from "./validation";
 
 describe("MiniBase security contract", () => {
   it("creates distinct scoped key formats", () => {
     const publicKey = randomToken("mb_publishable_");
     const secretKey = randomToken("mb_secret_");
+    const managementKey = randomToken("mb_management_");
     expect(publicKey).toMatch(/^mb_publishable_[a-f0-9]{64}$/);
     expect(secretKey).toMatch(/^mb_secret_[a-f0-9]{64}$/);
+    expect(managementKey).toMatch(/^mb_management_[a-f0-9]{64}$/);
     expect(publicKey).not.toBe(secretKey);
   });
 
-  it("accepts only the hashed management bearer key", async () => {
-    const key = "mb_management_test-only-key";
-    const request = new Request("https://minibase.test/v1/projects", {
-      headers: { authorization: `Bearer ${key}` },
-    });
-    expect(await managementKeyIsValid(request, await sha256(key))).toBe(true);
-    expect(await managementKeyIsValid(request, await sha256("wrong"))).toBe(false);
-    expect(await managementKeyIsValid(request, `${await sha256(key)}00`)).toBe(false);
+  it("enforces management scopes, expiry, and revocation", () => {
+    const active = {
+      id: "key-1",
+      scopes: "projects:write,keys:write",
+      expires_at: "2030-01-01T00:00:00Z",
+      revoked_at: null,
+    };
+    expect(managementKeyRecordIsAuthorized(active, "projects:write", new Date("2029-01-01"))).toBe(true);
+    expect(managementKeyRecordIsAuthorized(active, "audit:read", new Date("2029-01-01"))).toBe(false);
+    expect(managementKeyRecordIsAuthorized(active, "projects:write", new Date("2031-01-01"))).toBe(false);
+    expect(managementKeyRecordIsAuthorized(
+      { ...active, revoked_at: "2028-01-01T00:00:00Z" },
+      "projects:write",
+      new Date("2029-01-01"),
+    )).toBe(false);
   });
 
   it("validates project provisioning input", () => {
@@ -27,5 +37,16 @@ describe("MiniBase security contract", () => {
       name: "1C Tutor",
     });
     expect(() => parseCreateProject({ slug: "../escape", name: "Bad" })).toThrow();
+  });
+
+  it("validates management key creation", () => {
+    expect(parseCreateManagementKey({
+      name: "automation",
+      scopes: ["projects:write", "keys:write"],
+    })).toEqual({
+      name: "automation",
+      scopes: ["projects:write", "keys:write"],
+    });
+    expect(() => parseCreateManagementKey({ name: "x", scopes: ["root"] })).toThrow();
   });
 });
