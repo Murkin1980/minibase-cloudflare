@@ -10,6 +10,7 @@ Last verified: 2026-07-29
 - R2 Standard bucket: `minibase-files`
 - Rate limit: namespace `22001`, 120 calls per 60 seconds per hashed identity
   and route class
+- Worker secret `CLOUDFLARE_D1_API_TOKEN`: configured
 
 All six control migrations are applied. Health, response security headers, a
 generated correlation ID, and unauthenticated rejection were verified against
@@ -17,9 +18,6 @@ the deployed Worker.
 
 ## Remaining launch blockers
 
-- Create a narrowly scoped Cloudflare API token with Account D1 Edit access.
-- Store it interactively as Worker secret `CLOUDFLARE_D1_API_TOKEN`; never paste
-  it into Git, chat, command arguments, client configuration, or logs.
 - Run an authenticated management smoke request from a trusted secret-aware
   client.
 - Provision one explicitly approved pilot project and verify its D1/file
@@ -27,3 +25,11 @@ the deployed Worker.
 
 The primary management key was issued once and only its SHA-256 is stored in D1.
 Loss of the raw key requires an audited bootstrap/rotation procedure.
+
+Run the authenticated smoke without putting the key in command history:
+
+```powershell
+$env:MINIBASE_MANAGEMENT_KEY = Read-Host "Management key"
+npm.cmd run smoke:production
+Remove-Item Env:MINIBASE_MANAGEMENT_KEY
+```

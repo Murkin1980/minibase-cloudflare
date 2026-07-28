@@ -384,3 +384,15 @@ created and stored interactively. No paid plan or paid-only feature was enabled.
 
 The static readiness gate now reports ready because an approved, placeholder-free
 local production config exists. Runtime secret and pilot gates remain separate.
+
+## 2026-07-29 — Iteration 26: production D1 token and safe management smoke
+
+- Confirmed `CLOUDFLARE_D1_API_TOKEN` exists as a secret-text Worker secret.
+- Confirmed Cloudflare deployed secret-change version
+  `fca611d0-e24c-4315-a5b6-1ca7c6c33a20`.
+- Repeated health, security-header, and unauthenticated management smoke.
+- Added a read-only authenticated smoke script that accepts the management key
+  only through environment state and never prints it.
+
+Authenticated smoke awaits a trusted local key entry. Pilot project creation is
+not inferred from infrastructure approval.
