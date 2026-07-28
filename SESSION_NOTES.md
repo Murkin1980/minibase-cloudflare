@@ -292,3 +292,16 @@ No Supabase password hash or active credential is accepted as migration proof.
 
 This iteration builds and tests offline import batches only. It does not connect
 to Supabase or execute against a production D1 database.
+
+## 2026-07-29 — Iteration 18: migration verification and rollback evidence
+
+### Completed
+
+- Build a deterministic per-file verification report.
+- Fail on missing, duplicate, unexpected, or mismatched migration evidence.
+- Require a verified report, D1 bookmark, and checksummed R2 backup manifest
+  before constructing a rollback plan.
+- Fix the recovery sequence from write freeze through post-restore verification.
+
+MB5 is locally accepted. No backup, migration, restore, production resource, or
+paid service was created or invoked.

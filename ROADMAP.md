@@ -5,12 +5,12 @@ MB0/1 Foundation     [##########] 100%
 MB2 Control plane   [##########] 100%
 MB3 Data plane      [##########] 100%
 MB4 R2 files        [##########] 100%
-MB5 Supabase move   [########--]  80%
+MB5 Supabase move   [##########] 100%
 MB6 Client SDK      [----------]   0%
 MB7 Hardening       [----------]   0%
 MB8 Launch          [----------]   0%
 
-Overall             [#######---]  72%
+Overall             [########--]  75%
 ```
 
 ## Gates
@@ -20,7 +20,8 @@ Overall             [#######---]  72%
   intentionally unverified until production resources are approved.
 - MB4: complete for local acceptance; real R2 and project-D1 outbound behavior
   remains intentionally unverified without approved production-like resources.
-- MB5: manifest/checksums, SQL/value transforms, safe Auth identity/handoff,
-  and idempotent NDJSON table batches defined; verification and rollback remain.
+- MB5: complete for local acceptance: export manifest, deterministic transforms,
+  safe Auth handoff, idempotent imports, verification, and rollback evidence.
+  No real Supabase or Cloudflare migration has been executed.
 - MB8: requires an explicit owner decision before any production resource is
   created.
