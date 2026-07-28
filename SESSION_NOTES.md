@@ -223,3 +223,18 @@ that boundary would require production-like resources and owner approval.
 
 R2 object bytes are never buffered by Worker code. Remote project-D1 metadata
 calls remain locally mocked at their outbound boundary.
+
+## 2026-07-29 — Iteration 13: MB4 acceptance and reconciliation
+
+### Completed
+
+- Added integration-boundary tests proving project-prefixed R2 writes.
+- Verified upload bodies remain streams and metadata failure triggers R2 delete.
+- Added read-only file reconciliation for orphaned and missing objects.
+- Limited each reconciliation report to 1000 metadata rows and objects and
+  exposes a truncation flag.
+
+### MB4 verdict
+
+MB4 is complete for local acceptance. Reconciliation is deliberately report-only;
+no automatic deletion policy is assumed.

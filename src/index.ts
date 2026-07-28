@@ -15,6 +15,7 @@ import { authenticateDataKey } from "./data-auth";
 import { createDataKey, listDataKeys, revokeDataKey } from "./data-keys";
 import { errorResponse } from "./errors";
 import { deleteFile, downloadFile, listFiles, uploadFile, validateFilePath } from "./files-api";
+import { reconcileProjectFiles } from "./file-reconciliation";
 import { readJsonBounded } from "./http";
 import {
   authenticateManagementKey,
@@ -35,7 +36,7 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.11.0" });
+      return json({ service: "minibase", status: "ok", version: "0.12.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
@@ -123,6 +124,16 @@ export default {
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
         return json(await applyProjectSchema(env, schemaMatch[1], actor.keyId));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    const reconcileMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/files\/reconcile$/);
+    if (request.method === "GET" && reconcileMatch) {
+      const actor = await authenticateManagementKey(env, request, "projects:write");
+      if (!actor) return errorResponse(new Error("unauthorized"));
+      try {
+        return json(await reconcileProjectFiles(env, reconcileMatch[1]));
       } catch (error) {
         return errorResponse(error);
       }

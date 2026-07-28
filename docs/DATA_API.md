@@ -37,3 +37,7 @@ Files require `files:read` or `files:write`. R2 keys always begin with the
 authenticated project ID; callers cannot supply or override that prefix.
 Uploads require `Content-Length`. If project-D1 metadata persistence fails after
 an R2 upload, the Worker deletes the new object as compensation.
+
+`GET /v1/projects/{projectId}/files/reconcile` performs a read-only comparison
+of up to 1000 project metadata rows and R2 objects. It reports orphaned R2
+objects and metadata entries whose objects are missing; it never deletes either.

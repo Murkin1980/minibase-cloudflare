@@ -33,6 +33,11 @@ export interface R2Bucket {
     options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
   ): Promise<R2Object | null>;
   delete(key: string | string[]): Promise<void>;
+  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
+    objects: R2Object[];
+    truncated: boolean;
+    cursor?: string;
+  }>;
 }
 
 export interface MiniBaseEnv {
