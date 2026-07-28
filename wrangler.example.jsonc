@@ -14,5 +14,11 @@
       "database_id": "REPLACE_WITH_CONTROL_D1_ID",
       "migrations_dir": "migrations"
     }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "replace-with-minibase-files-bucket"
+    }
   ]
 }

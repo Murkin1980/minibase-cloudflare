@@ -11,6 +11,7 @@ const mf = new Miniflare({
   compatibilityDate: "2026-07-28",
   compatibilityFlags: ["nodejs_compat"],
   d1Databases: { CONTROL_DB: randomUUID() },
+  r2Buckets: { FILES: "minibase-test-files" },
   bindings: {
     CLOUDFLARE_ACCOUNT_ID: "test-account",
     CLOUDFLARE_D1_API_TOKEN: "test-token-never-returned",
@@ -47,7 +48,7 @@ try {
 
   const health = await mf.dispatchFetch("https://minibase.test/health");
   assert.equal(health.status, 200);
-  assert.equal((await health.json()).version, "0.10.0");
+  assert.equal((await health.json()).version, "0.11.0");
 
   const unauthorized = await mf.dispatchFetch(`https://minibase.test/v1/projects/${projectId}/keys`);
   assert.equal(unauthorized.status, 401);

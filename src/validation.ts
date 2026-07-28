@@ -58,8 +58,8 @@ export function parseCreateDataKey(value: unknown): CreateDataKeyRequest {
   }
   if (candidate.kind !== "publishable" && candidate.kind !== "secret") throw new Error("invalid_key_kind");
   const allowed = candidate.kind === "publishable"
-    ? new Set(["data:read", "data:write"])
-    : new Set(["data:read", "data:write", "project:admin"]);
+    ? new Set(["data:read", "data:write", "files:read", "files:write"])
+    : new Set(["data:read", "data:write", "files:read", "files:write", "project:admin"]);
   if (!Array.isArray(candidate.scopes) || candidate.scopes.length === 0 ||
       candidate.scopes.some((scope) => typeof scope !== "string" || !allowed.has(scope))) {
     throw new Error("invalid_scopes");

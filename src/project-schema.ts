@@ -23,6 +23,21 @@ export const projectSchemaMigrations: ProjectSchemaMigration[] = [
       "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (1, datetime('now'))",
     ],
   },
+  {
+    version: 2,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS mb_files (
+        path TEXT PRIMARY KEY,
+        size INTEGER NOT NULL,
+        content_type TEXT,
+        etag TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS mb_files_updated_idx ON mb_files(updated_at DESC)",
+      "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (2, datetime('now'))",
+    ],
+  },
 ];
 
 export function pendingProjectSchemaVersions(currentVersion: number): ProjectSchemaMigration[] {

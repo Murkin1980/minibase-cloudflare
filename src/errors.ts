@@ -6,8 +6,10 @@ const statusByCode: Record<string, number> = {
   data_key_not_found: 404,
   project_not_found: 404,
   record_not_found: 404,
+  file_not_found: 404,
   content_type_must_be_application_json: 415,
   request_body_too_large: 413,
+  file_too_large: 413,
   idempotency_key_reused_with_different_request: 409,
   cloudflare_api_error: 502,
 };
@@ -34,6 +36,9 @@ const clientErrorCodes = new Set([
   "invalid_origins",
   "invalid_key_kind",
   "invalid_schema_version",
+  "invalid_file_path",
+  "content_length_required",
+  "file_upload_failed",
 ]);
 
 export function errorResponse(error: unknown, fallbackCode = "internal_error"): Response {

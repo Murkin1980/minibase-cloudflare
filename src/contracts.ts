@@ -15,8 +15,29 @@ export interface D1Database {
   batch<T = Record<string, unknown>>(statements: D1PreparedStatement[]): Promise<Array<D1Result<T>>>;
 }
 
+export interface R2Object {
+  key: string;
+  size: number;
+  etag: string;
+  httpEtag: string;
+  uploaded: Date;
+  body?: ReadableStream;
+  writeHttpMetadata(headers: Headers): void;
+}
+
+export interface R2Bucket {
+  get(key: string): Promise<R2Object | null>;
+  put(
+    key: string,
+    value: ReadableStream,
+    options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
+  ): Promise<R2Object | null>;
+  delete(key: string | string[]): Promise<void>;
+}
+
 export interface MiniBaseEnv {
   CONTROL_DB: D1Database;
+  FILES: R2Bucket;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_D1_API_TOKEN: string;
 }

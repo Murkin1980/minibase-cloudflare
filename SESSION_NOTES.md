@@ -206,3 +206,20 @@ statement is idempotent so interrupted upgrades can be safely requested again.
 MB3 is complete for local acceptance. The only intentionally unverified boundary
 is the outbound Cloudflare D1 HTTP call against a real account/database. Testing
 that boundary would require production-like resources and owner approval.
+
+## 2026-07-29 — Iteration 12: R2 streaming file API
+
+### Completed
+
+- Added a static R2 binding template; no bucket was created.
+- Added project schema v2 with `mb_files` metadata.
+- Added streaming file upload/download, metadata list, and deletion endpoints.
+- Isolated every R2 key with an authenticated project-ID prefix.
+- Added `files:read` and `files:write` key scopes.
+- Require a declared upload length and cap the MVP upload at 25 MiB.
+- Delete a newly uploaded R2 object if metadata persistence fails.
+
+### Boundary
+
+R2 object bytes are never buffered by Worker code. Remote project-D1 metadata
+calls remain locally mocked at their outbound boundary.

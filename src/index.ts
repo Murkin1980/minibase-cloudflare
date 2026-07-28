@@ -14,6 +14,7 @@ import {
 import { authenticateDataKey } from "./data-auth";
 import { createDataKey, listDataKeys, revokeDataKey } from "./data-keys";
 import { errorResponse } from "./errors";
+import { deleteFile, downloadFile, listFiles, uploadFile, validateFilePath } from "./files-api";
 import { readJsonBounded } from "./http";
 import {
   authenticateManagementKey,
@@ -34,9 +35,9 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.10.0" });
+      return json({ service: "minibase", status: "ok", version: "0.11.0" });
     }
-    if (request.method === "OPTIONS" && /^\/v1\/data\//.test(url.pathname)) {
+    if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
@@ -153,6 +154,31 @@ export default {
         }
         if (request.method === "DELETE" && id) {
           await deleteRecord(env, principal, collection, id);
+          return cors(new Response(null, { status: 204 }));
+        }
+        return errorResponse(new Error("not_found"));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    const fileMatch = url.pathname.match(/^\/v1\/files(?:\/(.+))?$/);
+    if (fileMatch) {
+      try {
+        const path = fileMatch[1] ? validateFilePath(decodeURIComponent(fileMatch[1])) : null;
+        const requiredScope = request.method === "GET" ? "files:read" : "files:write";
+        const principal = await authenticateDataKey(env, request, requiredScope);
+        if (!principal) return errorResponse(new Error("unauthorized"));
+        if (!await dataOriginIsAllowed(env, principal.projectId, request)) {
+          return errorResponse(new Error("origin_not_allowed"));
+        }
+        const cors = (response: Response) => addCorsHeaders(response, request);
+        if (request.method === "GET" && !path) return cors(json(await listFiles(env, principal, url)));
+        if (request.method === "GET" && path) return cors(await downloadFile(env, principal, path));
+        if (request.method === "PUT" && path) {
+          return cors(json(await uploadFile(env, principal, path, request), 201));
+        }
+        if (request.method === "DELETE" && path) {
+          await deleteFile(env, principal, path);
           return cors(new Response(null, { status: 204 }));
         }
         return errorResponse(new Error("not_found"));
