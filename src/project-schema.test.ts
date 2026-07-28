@@ -9,9 +9,10 @@ describe("project schema lifecycle", () => {
   });
 
   it("plans only missing versions and is idempotent at current", () => {
-    expect(pendingProjectSchemaVersions(0).map((migration) => migration.version)).toEqual([1, 2]);
-    expect(pendingProjectSchemaVersions(1).map((migration) => migration.version)).toEqual([2]);
-    expect(pendingProjectSchemaVersions(2)).toEqual([]);
+    expect(pendingProjectSchemaVersions(0).map((migration) => migration.version)).toEqual([1, 2, 3]);
+    expect(pendingProjectSchemaVersions(1).map((migration) => migration.version)).toEqual([2, 3]);
+    expect(pendingProjectSchemaVersions(2).map((migration) => migration.version)).toEqual([3]);
+    expect(pendingProjectSchemaVersions(3)).toEqual([]);
     expect(() => pendingProjectSchemaVersions(-1)).toThrow("invalid_schema_version");
   });
 

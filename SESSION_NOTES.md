@@ -279,3 +279,16 @@ executed as SQLite.
 - Mark every identity as requiring password reset or fresh dual-auth handoff.
 
 No Supabase password hash or active credential is accepted as migration proof.
+
+## 2026-07-29 — Iteration 17: verified offline table import
+
+### Completed
+
+- Verify source bytes, SHA-256, declared NDJSON rows, and exact row shape.
+- Transform values according to the reviewed PostgreSQL catalog.
+- Build parameter-bound staging/upsert batches without executing source SQL.
+- Add project schema v3 migration journal keyed by migration ID and file path.
+- Skip exact completed replays and reject checksum or row-count conflicts.
+
+This iteration builds and tests offline import batches only. It does not connect
+to Supabase or execute against a production D1 database.

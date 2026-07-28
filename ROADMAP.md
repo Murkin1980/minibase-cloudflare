@@ -5,12 +5,12 @@ MB0/1 Foundation     [##########] 100%
 MB2 Control plane   [##########] 100%
 MB3 Data plane      [##########] 100%
 MB4 R2 files        [##########] 100%
-MB5 Supabase move   [######----]  60%
+MB5 Supabase move   [########--]  80%
 MB6 Client SDK      [----------]   0%
 MB7 Hardening       [----------]   0%
 MB8 Launch          [----------]   0%
 
-Overall             [#######---]  70%
+Overall             [#######---]  72%
 ```
 
 ## Gates
@@ -20,7 +20,7 @@ Overall             [#######---]  70%
   intentionally unverified until production resources are approved.
 - MB4: complete for local acceptance; real R2 and project-D1 outbound behavior
   remains intentionally unverified without approved production-like resources.
-- MB5: manifest/checksums, SQL/value transforms, and safe Auth identity/handoff
-  contract defined; import execution, verification, and rollback remain.
+- MB5: manifest/checksums, SQL/value transforms, safe Auth identity/handoff,
+  and idempotent NDJSON table batches defined; verification and rollback remain.
 - MB8: requires an explicit owner decision before any production resource is
   created.

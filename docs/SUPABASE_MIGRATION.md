@@ -52,3 +52,19 @@ Arrays are stored as JSON text. Numeric/decimal emits a precision warning.
 Unsupported types such as `tsvector`, Postgres functions, triggers, generated
 defaults, RLS policies, and extensions stop transformation or appear as explicit
 warnings; they are never silently executed as SQLite.
+
+### Offline table import
+
+Each table is exported as UTF-8 NDJSON with one complete object per line. Before
+any SQL is generated, MiniBase verifies the manifest byte length, SHA-256, row
+count, exact column set, supported value types, and a single primary key.
+
+The importer builds one atomic D1 batch: create and clear a deterministic
+staging table, insert transformed rows with bound parameters, upsert them into
+the destination table, record the file checksum in `mb_migration_imports`, and
+drop staging. A completed file with the same checksum and row count is skipped.
+A changed file under the same migration ID and path is rejected as a conflict.
+
+The import contract never executes SQL embedded in NDJSON and never derives
+identifiers from row values. The transformed destination schema must be reviewed
+and applied before its table data batch.

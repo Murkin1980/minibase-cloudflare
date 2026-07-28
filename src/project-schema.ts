@@ -38,6 +38,20 @@ export const projectSchemaMigrations: ProjectSchemaMigration[] = [
       "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (2, datetime('now'))",
     ],
   },
+  {
+    version: 3,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS mb_migration_imports (
+        migration_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        row_count INTEGER NOT NULL,
+        imported_at TEXT NOT NULL,
+        PRIMARY KEY (migration_id, file_path)
+      )`,
+      "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (3, datetime('now'))",
+    ],
+  },
 ];
 
 export function pendingProjectSchemaVersions(currentVersion: number): ProjectSchemaMigration[] {
