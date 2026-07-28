@@ -11,7 +11,10 @@ const requiredDocs = [
   "docs/PRODUCTION_DECISION.example.md",
 ];
 
-export async function inspectReleaseReadiness(root = new URL("../", import.meta.url)) {
+export async function inspectReleaseReadiness(
+  root = new URL("../", import.meta.url),
+  configPath = "wrangler.jsonc",
+) {
   const issues = [];
   for (const path of requiredDocs) {
     try {
@@ -22,11 +25,11 @@ export async function inspectReleaseReadiness(root = new URL("../", import.meta.
   }
   let productionConfig = "";
   try {
-    productionConfig = await readFile(new URL("wrangler.jsonc", root), "utf8");
+    productionConfig = await readFile(new URL(configPath, root), "utf8");
   } catch {
-    issues.push("owner_approval_required:wrangler.jsonc");
+    issues.push(`owner_approval_required:${configPath}`);
   }
-  if (/REPLACE_WITH|replace-with/i.test(productionConfig)) issues.push("placeholder:wrangler.jsonc");
+  if (/REPLACE_WITH|replace-with/i.test(productionConfig)) issues.push(`placeholder:${configPath}`);
   return {
     status: issues.length === 0 ? "ready" : "blocked",
     issues,

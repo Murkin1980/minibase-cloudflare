@@ -358,3 +358,29 @@ MB8 remains intentionally incomplete pending explicit production approval.
 
 - Corrected direct-entry detection with canonical Windows file URLs.
 - Added a subprocess acceptance test for JSON output and blocked exit code 2.
+
+## 2026-07-29 — Iteration 25: production infrastructure and public smoke
+
+### Created
+
+- Control D1 `minibase-control` in EEUR.
+- R2 Standard bucket `minibase-files`.
+- Worker `minibase-cloudflare` with rate-limit namespace 22001.
+
+### Verified
+
+- Applied control migrations 0001 through 0006.
+- Deployed version `bf880f05-28a7-4038-a592-3dc9bbb5738c`.
+- Health returned 200/version 0.22.1.
+- CSP, frame denial, no-store, and correlation ID headers were present.
+- An unauthenticated data request returned 401.
+- Issued the initial management key and stored only its SHA-256.
+
+### Remaining
+
+`CLOUDFLARE_D1_API_TOKEN` is not configured. Authenticated management smoke and
+pilot-project provisioning remain blocked until a narrowly scoped token is
+created and stored interactively. No paid plan or paid-only feature was enabled.
+
+The static readiness gate now reports ready because an approved, placeholder-free
+local production config exists. Runtime secret and pilot gates remain separate.
