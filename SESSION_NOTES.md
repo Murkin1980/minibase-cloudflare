@@ -305,3 +305,15 @@ to Supabase or execute against a production D1 database.
 
 MB5 is locally accepted. No backup, migration, restore, production resource, or
 paid service was created or invoked.
+
+## 2026-07-29 — Iteration 19: typed records client
+
+### Completed
+
+- Added a zero-dependency TypeScript client for list/get/put/delete records.
+- Validate HTTPS base URLs, collections, IDs, pagination, and record objects.
+- Normalize JSON API failures into typed client errors.
+- Permit publishable and secret data keys while explicitly rejecting management
+  keys from the application SDK.
+
+The client was tested only with mocked fetch; no Worker deployment was created.
