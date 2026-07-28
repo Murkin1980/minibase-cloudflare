@@ -81,6 +81,22 @@ database ID и никогда не получает Cloudflare token.
 Collection и record ID проходят allowlist-валидацию, а SQL и database UUID не
 принимаются из публичного request body.
 
+### Browser origins
+
+Management API настраивает allowlist проекта:
+
+```http
+PUT /v1/projects/{projectId}/origins
+Authorization: Bearer mb_management_...
+Content-Type: application/json
+
+{"origins":["https://tutor.example","http://localhost:3000"]}
+```
+
+Произвольный HTTPS origin не отражается в фактическом data response: после
+аутентификации ключа Worker сверяет origin с его проектом. HTTP разрешён только
+для `localhost` и `127.0.0.1`.
+
 ## Модель подключения
 
 Клиентское приложение получает только URL API и `mb_publishable_*`.

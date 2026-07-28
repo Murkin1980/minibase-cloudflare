@@ -18,6 +18,7 @@ try {
     "migrations/0002_management_keys.sql",
     "migrations/0003_provisioning_recovery.sql",
     "migrations/0004_data_keys.sql",
+    "migrations/0005_project_origins.sql",
   ]) {
     const sql = await readFile(new URL(`../${migration}`, import.meta.url), "utf8");
     for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean)) {
@@ -57,6 +58,10 @@ try {
   for (const expected of ["name", "last_used_at", "rotated_from_key_id"]) {
     assert.ok(keyColumnNames.has(expected), `missing api_keys.${expected}`);
   }
+  const originTable = await db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_origins'",
+  ).first();
+  assert.equal(originTable.name, "project_origins");
 
   const atomicHash = "b".repeat(64);
   await assert.rejects(db.batch([

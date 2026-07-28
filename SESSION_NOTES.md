@@ -148,3 +148,18 @@ No production resource or paid service was created.
 
 This iteration is locally tested but does not call a real Cloudflare D1. CORS,
 data-key management endpoints, and full Worker integration tests remain MB3 work.
+
+## 2026-07-29 — Iteration 8: project-scoped browser origins
+
+### Completed
+
+- Added a normalized per-project origin allowlist in control D1.
+- Added a scoped management endpoint that atomically replaces project origins
+  and audits the change.
+- Added data-plane origin enforcement after key authentication resolves the
+  owning project.
+- Added browser preflight handling and origin-specific response headers.
+- Restricted non-TLS origins to localhost development.
+
+Preflight responses expose no project data. A successful preflight does not
+bypass authentication or the origin check on the actual request.

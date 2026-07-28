@@ -1,5 +1,6 @@
 import { listAuditEvents, parseAuditQuery } from "./audit";
 import type { MiniBaseEnv } from "./contracts";
+import { addCorsHeaders, dataOriginIsAllowed, preflightResponse } from "./cors";
 import {
   deleteRecord,
   getRecord,
@@ -19,6 +20,7 @@ import {
   revokeManagementKey,
 } from "./management-keys";
 import { provisionProject } from "./provision";
+import { parseOrigins, replaceProjectOrigins } from "./project-origins";
 import { parseCreateManagementKey, parseCreateProject } from "./validation";
 
 const json = (body: unknown, status = 200) => Response.json(body, {
@@ -30,7 +32,10 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.6.0" });
+      return json({ service: "minibase", status: "ok", version: "0.7.0" });
+    }
+    if (request.method === "OPTIONS" && /^\/v1\/data\//.test(url.pathname)) {
+      return preflightResponse(request);
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
       const actor = await authenticateManagementKey(env, request, "projects:write");
@@ -75,6 +80,18 @@ export default {
         return errorResponse(error);
       }
     }
+    const originsMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/origins$/);
+    if (request.method === "PUT" && originsMatch) {
+      const actor = await authenticateManagementKey(env, request, "projects:write");
+      if (!actor) return errorResponse(new Error("unauthorized"));
+      try {
+        const origins = parseOrigins(await readJsonBounded(request));
+        await replaceProjectOrigins(env, originsMatch[1], origins, actor);
+        return json({ projectId: originsMatch[1], origins });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
     const dataMatch = url.pathname.match(/^\/v1\/data\/([^/]+)(?:\/([^/]+))?$/);
     if (dataMatch) {
       try {
@@ -83,22 +100,26 @@ export default {
         const requiredScope = request.method === "GET" ? "data:read" : "data:write";
         const principal = await authenticateDataKey(env, request, requiredScope);
         if (!principal) return errorResponse(new Error("unauthorized"));
-        if (request.method === "GET" && id) return json(await getRecord(env, principal, collection, id));
+        if (!await dataOriginIsAllowed(env, principal.projectId, request)) {
+          return errorResponse(new Error("origin_not_allowed"));
+        }
+        const cors = (response: Response) => addCorsHeaders(response, request);
+        if (request.method === "GET" && id) return cors(json(await getRecord(env, principal, collection, id)));
         if (request.method === "GET" && !id) {
-          return json(await listRecords(env, principal, collection, parseListQuery(url)));
+          return cors(json(await listRecords(env, principal, collection, parseListQuery(url))));
         }
         if (request.method === "PUT" && id) {
-          return json(await putRecord(
+          return cors(json(await putRecord(
             env,
             principal,
             collection,
             id,
             validateRecordData(await readJsonBounded(request)),
-          ));
+          )));
         }
         if (request.method === "DELETE" && id) {
           await deleteRecord(env, principal, collection, id);
-          return new Response(null, { status: 204 });
+          return cors(new Response(null, { status: 204 }));
         }
         return errorResponse(new Error("not_found"));
       } catch (error) {

@@ -1,5 +1,6 @@
 const statusByCode: Record<string, number> = {
   unauthorized: 401,
+  origin_not_allowed: 403,
   not_found: 404,
   management_key_not_found: 404,
   record_not_found: 404,
@@ -26,6 +27,9 @@ const clientErrorCodes = new Set([
   "invalid_collection",
   "invalid_record_id",
   "invalid_record_data",
+  "invalid_origin",
+  "insecure_origin",
+  "invalid_origins",
 ]);
 
 export function errorResponse(error: unknown, fallbackCode = "internal_error"): Response {
