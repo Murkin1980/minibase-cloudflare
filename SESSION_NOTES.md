@@ -190,3 +190,19 @@ committed in the same D1 batch.
 
 Remote D1 schema calls are not claimed as production-verified. Every current
 statement is idempotent so interrupted upgrades can be safely requested again.
+
+## 2026-07-29 — Iteration 11: MB3 Worker acceptance
+
+### Completed
+
+- Added a Miniflare/workerd test for the actual bundled Worker.
+- Apply all control migrations before each isolated integration run.
+- Verified health, unauthorized management access, scoped project-key issuance,
+  omission of raw/hash data from key listings, scope denial, and CORS preflight.
+- Added Worker integration acceptance to the mandatory `npm run check` gate.
+
+### MB3 verdict
+
+MB3 is complete for local acceptance. The only intentionally unverified boundary
+is the outbound Cloudflare D1 HTTP call against a real account/database. Testing
+that boundary would require production-like resources and owner approval.
