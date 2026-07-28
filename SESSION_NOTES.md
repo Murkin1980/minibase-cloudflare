@@ -238,3 +238,18 @@ calls remain locally mocked at their outbound boundary.
 
 MB4 is complete for local acceptance. Reconciliation is deliberately report-only;
 no automatic deletion policy is assumed.
+
+## 2026-07-29 — Iteration 14: migration package contract
+
+### Completed
+
+- Added a versioned Supabase migration manifest JSON Schema and runtime validator.
+- Require SHA-256, byte size, unique safe path, and optional row count for every
+  package file.
+- Standardized table exports on UTF-8 NDJSON.
+- Added a streaming offline checksum CLI.
+- Explicitly allow only password-reset or dual-auth handoff strategies.
+- Explicitly forbid copying Supabase password hashes, sessions, refresh tokens,
+  service-role keys, database passwords, and JWT secrets.
+
+No Supabase project was connected or modified.

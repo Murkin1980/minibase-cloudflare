@@ -36,7 +36,7 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.12.0" });
+      return json({ service: "minibase", status: "ok", version: "0.13.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);

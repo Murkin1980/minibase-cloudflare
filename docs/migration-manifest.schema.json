@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minibase.dev/schemas/migration-manifest-v1.json",
+  "title": "MiniBase Supabase migration manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["formatVersion", "migrationId", "source", "target", "exportedAt", "authStrategy", "files"],
+  "properties": {
+    "formatVersion": { "const": 1 },
+    "migrationId": { "type": "string", "pattern": "^[0-9a-f-]{36}$" },
+    "source": {
+      "type": "object",
+      "required": ["provider", "projectRefSha256"],
+      "properties": {
+        "provider": { "const": "supabase" },
+        "projectRefSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["projectSlug"],
+      "properties": { "projectSlug": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,39}$" } }
+    },
+    "exportedAt": { "type": "string", "format": "date-time" },
+    "authStrategy": { "enum": ["password-reset", "dual-auth-handoff"] },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "kind", "format", "sha256", "bytes"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$" },
+          "kind": { "enum": ["schema", "table", "auth-identities", "storage-metadata", "storage-object"] },
+          "format": { "enum": ["json", "ndjson", "sql", "binary"] },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "rows": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}
