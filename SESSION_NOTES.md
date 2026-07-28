@@ -98,3 +98,22 @@ Cloudflare credentials. No remote resource was created.
 Automatic retry of a failed provisioning job remains disabled. A failed rollback
 may leave a remote D1 ID recorded for operator reconciliation; the control plane
 will not silently create a duplicate database.
+
+## 2026-07-28 — Iteration 5: MB2 acceptance
+
+### Completed
+
+- Added a stable `{ error: { code } }` response envelope and HTTP status mapping.
+- Sanitized unknown and Cloudflare API failures so upstream details are not
+  returned to callers.
+- Replaced locale-dependent validation messages with machine-readable codes.
+- Added a Miniflare/workerd D1 integration test that applies every migration,
+  exercises management-key persistence and revocation, verifies recovery
+  columns, and proves failed D1 batches roll back atomically.
+- Added the D1 integration test to the mandatory `npm run check` gate.
+
+### MB2 verdict
+
+MB2 control plane is complete for local acceptance. Production provisioning is
+still intentionally unverified because no production Worker or Cloudflare
+resource has been approved or created.

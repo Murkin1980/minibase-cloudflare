@@ -30,7 +30,7 @@ async function cloudflareRequest<T>(env: MiniBaseEnv, path: string, init: Reques
     },
   });
   const payload = await response.json() as CloudflareResponse<T>;
-  if (!response.ok || !payload.success) throw new Error(payload.errors?.[0]?.message ?? "cloudflare_api_error");
+  if (!response.ok || !payload.success) throw new Error("cloudflare_api_error");
   return payload.result;
 }
 
