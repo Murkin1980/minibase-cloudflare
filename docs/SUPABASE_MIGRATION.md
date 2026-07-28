@@ -24,3 +24,15 @@ Auth migration supports only:
   after successful authentication.
 
 Both strategies avoid manually copying `auth.users.encrypted_password`.
+
+## PostgreSQL to SQLite transform
+
+Migration uses a declarative catalog export rather than executing a raw
+PostgreSQL dump. Identifiers must match a strict allowlist and are always quoted.
+Common mappings include UUID/text→TEXT, integer types→INTEGER,
+boolean→INTEGER with a check, JSON/JSONB→TEXT with `json_valid`, and bytea→BLOB.
+
+Arrays are stored as JSON text. Numeric/decimal emits a precision warning.
+Unsupported types such as `tsvector`, Postgres functions, triggers, generated
+defaults, RLS policies, and extensions stop transformation or appear as explicit
+warnings; they are never silently executed as SQLite.

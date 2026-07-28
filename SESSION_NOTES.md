@@ -253,3 +253,17 @@ no automatic deletion policy is assumed.
   service-role keys, database passwords, and JWT secrets.
 
 No Supabase project was connected or modified.
+
+## 2026-07-29 — Iteration 15: PostgreSQL to SQLite transform
+
+### Completed
+
+- Added strict declarative Postgres table/column input contracts.
+- Added deterministic SQLite type, default, and value transforms.
+- Quote allowlisted identifiers and reject unsafe names.
+- Convert booleans, JSON/JSONB, arrays, bytea, and temporal values without
+  evaluating source content.
+- Emit precision/default warnings and reject unsupported types.
+
+Raw PostgreSQL dumps, functions, triggers, policies, and extensions are not
+executed as SQLite.
