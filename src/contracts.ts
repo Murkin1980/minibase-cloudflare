@@ -45,6 +45,9 @@ export interface MiniBaseEnv {
   FILES: R2Bucket;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_D1_API_TOKEN: string;
+  RATE_LIMITER?: {
+    limit(options: { key: string }): Promise<{ success: boolean }>;
+  };
 }
 
 export interface ManagementPrincipal {

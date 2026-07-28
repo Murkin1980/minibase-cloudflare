@@ -27,6 +27,7 @@ import { applyProjectSchema } from "./project-schema";
 import { parseOrigins, replaceProjectOrigins } from "./project-origins";
 import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
 import { hardenResponse, resolveRequestId } from "./response-security";
+import { requestIsAllowed } from "./abuse-control";
 
 const json = (body: unknown, status = 200) => Response.json(body, {
   status,
@@ -37,7 +38,7 @@ const application = {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.20.0" });
+      return json({ service: "minibase", status: "ok", version: "0.21.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
@@ -206,6 +207,9 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const requestId = resolveRequestId(request);
     try {
+      if (!await requestIsAllowed(env, request)) {
+        return hardenResponse(errorResponse(new Error("rate_limited")), requestId);
+      }
       return hardenResponse(await application.fetch(request, env), requestId);
     } catch {
       return hardenResponse(errorResponse(new Error("internal_error")), requestId);

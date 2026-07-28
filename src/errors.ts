@@ -12,6 +12,7 @@ const statusByCode: Record<string, number> = {
   file_too_large: 413,
   idempotency_key_reused_with_different_request: 409,
   cloudflare_api_error: 502,
+  rate_limited: 429,
 };
 
 const clientErrorCodes = new Set([

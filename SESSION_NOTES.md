@@ -335,3 +335,12 @@ MB6 is locally accepted; package registry publication remains out of scope.
 - Added a top-level sanitized fallback for otherwise uncaught exceptions.
 
 No rate-limit binding or production configuration was created.
+
+## 2026-07-29 — Iteration 22: abuse-control contract and MB7 acceptance
+
+- Added optional Worker Rate Limiting binding support.
+- Partition limits by control/data/files and hash bearer credentials.
+- Bypass health and CORS preflight; return stable `rate_limited` HTTP 429.
+- Documented the explicit production approval gate.
+
+No binding, rule, deployment, or paid resource was created.
