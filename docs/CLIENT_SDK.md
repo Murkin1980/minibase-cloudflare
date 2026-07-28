@@ -13,6 +13,8 @@ const minibase = new MiniBaseClient({
 
 const page = await minibase.list<{ title: string }>("lessons", { limit: 25 });
 await minibase.put("progress", "user:lesson", { completed: true });
+await minibase.uploadFile("avatars/user.png", imageBlob);
+const response = await minibase.downloadFile("avatars/user.png");
 ```
 
 Frontend code may receive only a deliberately scoped `mb_publishable_*` key.
@@ -22,3 +24,7 @@ never enter application bundles.
 
 Non-local HTTP base URLs are rejected. API failures throw
 `MiniBaseClientError` with stable `code` and numeric `status`.
+
+File downloads return the original streaming `Response`. Uploads accept a
+`Blob`, forwarding its exact size and media type; file paths receive the same
+traversal checks as the Worker.

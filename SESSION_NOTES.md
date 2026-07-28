@@ -317,3 +317,11 @@ paid service was created or invoked.
   keys from the application SDK.
 
 The client was tested only with mocked fetch; no Worker deployment was created.
+
+## 2026-07-29 — Iteration 20: file client and MB6 acceptance
+
+- Added list, streaming download, Blob upload, and delete file helpers.
+- Preserve upload content type and explicit byte length.
+- Apply the Worker-compatible traversal-safe path contract in the client.
+
+MB6 is locally accepted; package registry publication remains out of scope.

@@ -28,6 +28,7 @@ export interface MiniBaseClientOptions {
 
 const collectionPattern = /^[a-z][a-z0-9_-]{1,62}$/;
 const recordIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const filePathPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
 
 function validateBaseUrl(value: string): string {
   const url = new URL(value);
@@ -81,6 +82,13 @@ export class MiniBaseClient {
     return response.json() as Promise<T>;
   }
 
+  private filePath(path: string): string {
+    if (!filePathPattern.test(path) || path.includes("..") || path.includes("//") || path.endsWith("/")) {
+      throw new Error("invalid_file_path");
+    }
+    return path.split("/").map(encodeURIComponent).join("/");
+  }
+
   private collectionPath(collection: string, id?: string): string {
     if (!collectionPattern.test(collection)) throw new Error("invalid_collection");
     if (id !== undefined && !recordIdPattern.test(id)) throw new Error("invalid_record_id");
@@ -124,5 +132,43 @@ export class MiniBaseClient {
 
   delete(collection: string, id: string): Promise<void> {
     return this.request(this.collectionPath(collection, id), { method: "DELETE" });
+  }
+
+  listFiles(options: { limit?: number; after?: string } = {}): Promise<{
+    files: Array<{ path: string; size: number; contentType: string | null; etag: string; createdAt: string; updatedAt: string }>;
+    nextAfter: string | null;
+  }> {
+    const query = new URLSearchParams();
+    if (options.limit !== undefined) {
+      if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) throw new Error("invalid_limit");
+      query.set("limit", String(options.limit));
+    }
+    if (options.after !== undefined) query.set("after", this.filePath(options.after));
+    return this.request(`/v1/files${query.size ? `?${query}` : ""}`);
+  }
+
+  async downloadFile(path: string): Promise<Response> {
+    const response = await this.requestFetch(`${this.baseUrl}/v1/files/${this.filePath(path)}`, {
+      headers: { authorization: `Bearer ${this.key}` },
+    });
+    if (!response.ok) return parseError(response);
+    return response;
+  }
+
+  uploadFile(path: string, body: Blob): Promise<{
+    path: string; size: number; contentType: string; etag: string; updatedAt: string;
+  }> {
+    return this.request(`/v1/files/${this.filePath(path)}`, {
+      method: "PUT",
+      body,
+      headers: {
+        "content-type": body.type || "application/octet-stream",
+        "content-length": String(body.size),
+      },
+    });
+  }
+
+  deleteFile(path: string): Promise<void> {
+    return this.request(`/v1/files/${this.filePath(path)}`, { method: "DELETE" });
   }
 }

@@ -62,4 +62,25 @@ describe("MiniBase client", () => {
       expect.objectContaining<Partial<MiniBaseClientError>>({ code: "record_not_found", status: 404 }),
     );
   });
+
+  it("streams file responses and sends explicit upload metadata", async () => {
+    const download = new Response("hello", { headers: { "content-type": "text/plain" } });
+    const requestFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(download)
+      .mockResolvedValueOnce(Response.json({
+        path: "docs/a.txt", size: 5, contentType: "text/plain", etag: "x", updatedAt: "now",
+      }));
+    const client = new MiniBaseClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_secret_files",
+      fetch: requestFetch,
+    });
+    await expect(client.downloadFile("docs/a.txt")).resolves.toBe(download);
+    await client.uploadFile("docs/a.txt", new Blob(["hello"], { type: "text/plain" }));
+    expect(requestFetch.mock.calls[1][1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      headers: expect.objectContaining({ "content-length": "5", "content-type": "text/plain" }),
+    }));
+    expect(() => client.deleteFile("../escape")).toThrow("invalid_file_path");
+  });
 });
