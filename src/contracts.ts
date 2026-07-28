@@ -12,6 +12,7 @@ export interface D1PreparedStatement {
 
 export interface D1Database {
   prepare(sql: string): D1PreparedStatement;
+  batch<T = Record<string, unknown>>(statements: D1PreparedStatement[]): Promise<Array<D1Result<T>>>;
 }
 
 export interface MiniBaseEnv {

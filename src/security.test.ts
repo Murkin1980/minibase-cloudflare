@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { managementKeyRecordIsAuthorized } from "./management-keys";
+import { provisioningFingerprint } from "./provision";
 import { randomToken } from "./security";
 import { parseCreateManagementKey, parseCreateProject } from "./validation";
 
@@ -48,5 +49,16 @@ describe("MiniBase security contract", () => {
       scopes: ["projects:write", "keys:write"],
     });
     expect(() => parseCreateManagementKey({ name: "x", scopes: ["root"] })).toThrow();
+  });
+
+  it("binds idempotency to the canonical provisioning request", async () => {
+    await expect(Promise.all([
+      provisioningFingerprint({ slug: "tutor-kz", name: "Tutor", region: "apac" }),
+      provisioningFingerprint({ name: "Tutor", region: "apac", slug: "tutor-kz" }),
+    ])).resolves.toSatisfy(([left, right]) => left === right);
+    await expect(Promise.all([
+      provisioningFingerprint({ slug: "tutor-kz", name: "Tutor" }),
+      provisioningFingerprint({ slug: "other", name: "Tutor" }),
+    ])).resolves.toSatisfy(([left, right]) => left !== right);
   });
 });

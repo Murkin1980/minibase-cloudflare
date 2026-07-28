@@ -18,7 +18,7 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.3.0" });
+      return json({ service: "minibase", status: "ok", version: "0.4.0" });
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
       const actor = await authenticateManagementKey(env, request, "projects:write");

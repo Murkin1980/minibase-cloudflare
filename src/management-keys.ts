@@ -95,7 +95,7 @@ export async function createManagementKey(
   const id = crypto.randomUUID();
   const key = randomToken("mb_management_");
   const now = new Date().toISOString();
-  await env.CONTROL_DB.prepare(
+  const createStatement = env.CONTROL_DB.prepare(
     `INSERT INTO management_keys
       (id, name, key_hash, scopes, expires_at, rotated_from_key_id, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -107,17 +107,22 @@ export async function createManagementKey(
     input.expiresAt ?? null,
     input.rotateFromKeyId ?? null,
     now,
-  ).run();
-
+  );
+  const statements = [createStatement];
   if (input.rotateFromKeyId) {
-    await env.CONTROL_DB.prepare(
+    statements.push(env.CONTROL_DB.prepare(
       "UPDATE management_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-    ).bind(now, input.rotateFromKeyId).run();
+    ).bind(now, input.rotateFromKeyId));
   }
-  await recordAudit(env, "management_key.created", "success", actor.keyId, null, {
+  statements.push(env.CONTROL_DB.prepare(
+    `INSERT INTO audit_events
+      (id, project_id, action, created_at, actor_key_id, outcome, metadata)
+     VALUES (?, NULL, 'management_key.created', ?, ?, 'success', ?)`,
+  ).bind(crypto.randomUUID(), now, actor.keyId, JSON.stringify({
     createdKeyId: id,
     rotatedFromKeyId: input.rotateFromKeyId ?? "",
-  });
+  })));
+  await env.CONTROL_DB.batch(statements);
   return { id, key, expiresAt: input.expiresAt ?? null };
 }
 
@@ -127,8 +132,19 @@ export async function revokeManagementKey(
   actor: ManagementPrincipal,
 ): Promise<void> {
   if (keyId === actor.keyId) throw new Error("active_key_self_revoke_forbidden");
-  await env.CONTROL_DB.prepare(
+  const existing = await env.CONTROL_DB.prepare(
+    "SELECT id FROM management_keys WHERE id = ? AND revoked_at IS NULL",
+  ).bind(keyId).first<{ id: string }>();
+  if (!existing) throw new Error("management_key_not_found");
+  const now = new Date().toISOString();
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare(
     "UPDATE management_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-  ).bind(new Date().toISOString(), keyId).run();
-  await recordAudit(env, "management_key.revoked", "success", actor.keyId, null, { revokedKeyId: keyId });
+    ).bind(now, keyId),
+    env.CONTROL_DB.prepare(
+      `INSERT INTO audit_events
+        (id, project_id, action, created_at, actor_key_id, outcome, metadata)
+       VALUES (?, NULL, 'management_key.revoked', ?, ?, 'success', ?)`,
+    ).bind(crypto.randomUUID(), now, actor.keyId, JSON.stringify({ revokedKeyId: keyId })),
+  ]);
 }

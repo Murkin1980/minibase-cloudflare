@@ -61,8 +61,6 @@ dry-run build. GitHub Actions are intentionally not used.
 
 ### Remaining MB2 work
 
-- Make remote D1 provisioning and key rotation resilient to partial failures and
-  concurrent requests.
 - Add integration-level D1 tests and explicit API error taxonomy.
 
 ## 2026-07-28 — Iteration 3: audit API and HTTP boundaries
@@ -80,3 +78,23 @@ dry-run build. GitHub Actions are intentionally not used.
 
 Audit responses contain key IDs and metadata but never key hashes, raw keys, or
 Cloudflare credentials. No remote resource was created.
+
+## 2026-07-28 — Iteration 4: atomic control-plane mutations
+
+### Completed
+
+- Added atomic D1 batches for project/job reservation, provisioning completion,
+  management-key issue/rotation, and revocation.
+- Bound each idempotency key to a canonical request hash and reject mismatched
+  replays.
+- Re-read the winning provisioning job after an idempotency race.
+- Persist the remote D1 identifier as soon as it is created.
+- Added compensating D1 deletion after partial provisioning failure and persist
+  whether rollback completed or failed.
+- Added failure audit records without leaking error payloads or credentials.
+
+### Known boundary
+
+Automatic retry of a failed provisioning job remains disabled. A failed rollback
+may leave a remote D1 ID recorded for operator reconciliation; the control plane
+will not silently create a duplicate database.

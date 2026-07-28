@@ -54,6 +54,12 @@ Management endpoints:
 JSON request bodies ограничены 64 KiB и должны иметь
 `Content-Type: application/json`.
 
+Provisioning привязывает `Idempotency-Key` к хэшу нормализованного запроса.
+Повтор с тем же ключом и другим телом отклоняется. Резервирование проекта и
+provisioning job выполняется атомарным D1 batch. Если удалённая D1 уже создана,
+но последующий шаг завершился ошибкой, control plane пытается удалить её и
+записывает `rollback_status` в job и audit log.
+
 ## Модель подключения
 
 Клиентское приложение получает только URL API и `mb_publishable_*`.
