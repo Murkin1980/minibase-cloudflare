@@ -3,6 +3,8 @@ const statusByCode: Record<string, number> = {
   origin_not_allowed: 403,
   not_found: 404,
   management_key_not_found: 404,
+  data_key_not_found: 404,
+  project_not_found: 404,
   record_not_found: 404,
   content_type_must_be_application_json: 415,
   request_body_too_large: 413,
@@ -30,6 +32,7 @@ const clientErrorCodes = new Set([
   "invalid_origin",
   "insecure_origin",
   "invalid_origins",
+  "invalid_key_kind",
 ]);
 
 export function errorResponse(error: unknown, fallbackCode = "internal_error"): Response {

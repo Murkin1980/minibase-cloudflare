@@ -12,6 +12,7 @@ import {
   validateRecordId,
 } from "./data-api";
 import { authenticateDataKey } from "./data-auth";
+import { createDataKey, listDataKeys, revokeDataKey } from "./data-keys";
 import { errorResponse } from "./errors";
 import { readJsonBounded } from "./http";
 import {
@@ -21,7 +22,7 @@ import {
 } from "./management-keys";
 import { provisionProject } from "./provision";
 import { parseOrigins, replaceProjectOrigins } from "./project-origins";
-import { parseCreateManagementKey, parseCreateProject } from "./validation";
+import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
 
 const json = (body: unknown, status = 200) => Response.json(body, {
   status,
@@ -32,7 +33,7 @@ export default {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.7.0" });
+      return json({ service: "minibase", status: "ok", version: "0.8.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/data\//.test(url.pathname)) {
       return preflightResponse(request);
@@ -88,6 +89,28 @@ export default {
         const origins = parseOrigins(await readJsonBounded(request));
         await replaceProjectOrigins(env, originsMatch[1], origins, actor);
         return json({ projectId: originsMatch[1], origins });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    const projectKeysMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/keys(?:\/([0-9a-f-]+))?$/);
+    if (projectKeysMatch) {
+      const actor = await authenticateManagementKey(env, request, "keys:write");
+      if (!actor) return errorResponse(new Error("unauthorized"));
+      const projectId = projectKeysMatch[1];
+      const keyId = projectKeysMatch[2];
+      try {
+        if (request.method === "GET" && !keyId) return json(await listDataKeys(env, projectId));
+        if (request.method === "POST" && !keyId) {
+          return json(await createDataKey(
+            env, projectId, parseCreateDataKey(await readJsonBounded(request)), actor,
+          ), 201);
+        }
+        if (request.method === "DELETE" && keyId) {
+          await revokeDataKey(env, projectId, keyId, actor);
+          return new Response(null, { status: 204 });
+        }
+        return errorResponse(new Error("not_found"));
       } catch (error) {
         return errorResponse(error);
       }

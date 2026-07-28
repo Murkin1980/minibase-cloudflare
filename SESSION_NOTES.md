@@ -163,3 +163,17 @@ data-key management endpoints, and full Worker integration tests remain MB3 work
 
 Preflight responses expose no project data. A successful preflight does not
 bypass authentication or the origin check on the actual request.
+
+## 2026-07-29 — Iteration 9: project key lifecycle
+
+### Completed
+
+- Added management endpoints to list, issue, rotate, and revoke project keys.
+- Enforced separate publishable and secret scope allowlists.
+- Return raw key material only on successful creation; list responses omit both
+  raw keys and hashes.
+- Made rotation and revocation atomic with their audit records.
+- Prevented rotation across projects or key kinds.
+
+No existing project key is revoked until its replacement and audit record can be
+committed in the same D1 batch.

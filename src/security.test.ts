@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { managementKeyRecordIsAuthorized } from "./management-keys";
 import { provisioningFingerprint } from "./provision";
 import { randomToken } from "./security";
-import { parseCreateManagementKey, parseCreateProject } from "./validation";
+import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
 
 describe("MiniBase security contract", () => {
   it("creates distinct scoped key formats", () => {
@@ -60,5 +60,23 @@ describe("MiniBase security contract", () => {
       provisioningFingerprint({ slug: "tutor-kz", name: "Tutor" }),
       provisioningFingerprint({ slug: "other", name: "Tutor" }),
     ])).resolves.toSatisfy(([left, right]) => left !== right);
+  });
+
+  it("restricts scopes by data-key kind", () => {
+    expect(parseCreateDataKey({
+      name: "browser",
+      kind: "publishable",
+      scopes: ["data:read"],
+    })).toEqual({ name: "browser", kind: "publishable", scopes: ["data:read"] });
+    expect(() => parseCreateDataKey({
+      name: "browser",
+      kind: "publishable",
+      scopes: ["project:admin"],
+    })).toThrow("invalid_scopes");
+    expect(parseCreateDataKey({
+      name: "backend",
+      kind: "secret",
+      scopes: ["project:admin"],
+    }).kind).toBe("secret");
   });
 });

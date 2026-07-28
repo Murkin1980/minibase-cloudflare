@@ -46,6 +46,14 @@ export interface CreateManagementKeyRequest {
   rotateFromKeyId?: string;
 }
 
+export interface CreateDataKeyRequest {
+  name: string;
+  kind: "publishable" | "secret";
+  scopes: string[];
+  expiresAt?: string;
+  rotateFromKeyId?: string;
+}
+
 export interface CreateProjectRequest {
   slug: string;
   name: string;
