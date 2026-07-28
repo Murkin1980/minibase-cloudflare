@@ -8,9 +8,9 @@ MB4 R2 files        [##########] 100%
 MB5 Supabase move   [##########] 100%
 MB6 Client SDK      [##########] 100%
 MB7 Hardening       [##########] 100%
-MB8 Launch          [#########-]  90%
+MB8 Launch          [##########] 100%
 
-Overall             [##########]  99%
+Overall             [##########] 100%
 ```
 
 ## Gates
@@ -26,6 +26,6 @@ Overall             [##########]  99%
 - MB6: locally accepted typed records/files client with strict key separation.
 - MB7: locally accepted response security and optional hashed-identity abuse
   control. Production binding values still require owner approval.
-- MB8: Worker, storage, rate limiter, migrations, D1 provisioning secret, and
-  public smoke tests are complete. Authenticated management smoke remains;
-  pilot provisioning requires a separately approved project.
+- MB8: production infrastructure, secrets, migrations, public smoke, and
+  authenticated management smoke are complete. Pilot projects are independent
+  onboarding decisions.

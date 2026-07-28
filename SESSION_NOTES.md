@@ -396,3 +396,15 @@ local production config exists. Runtime secret and pilot gates remain separate.
 
 Authenticated smoke awaits a trusted local key entry. Pilot project creation is
 not inferred from infrastructure approval.
+
+## 2026-07-29 — Iteration 27: management key recovery and launch acceptance
+
+- Revoked the lost initial owner management key.
+- Issued a replacement and stored only its SHA-256 in control D1.
+- Confirmed authenticated production audit access with the secret-safe smoke
+  script.
+- Verified health request ID `7800d8ee-53c2-49ec-ae06-1dedd89ff91c`.
+- Verified audit request ID `6a601f54-fc06-4c3b-bca2-2cb63c18fc2f`.
+
+MB8 and the MiniBase infrastructure project are accepted at 100%. Connecting
+1C Tutor or another pilot remains a separately scoped onboarding iteration.

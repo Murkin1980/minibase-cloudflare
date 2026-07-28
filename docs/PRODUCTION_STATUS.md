@@ -13,18 +13,17 @@ Last verified: 2026-07-29
 - Worker secret `CLOUDFLARE_D1_API_TOKEN`: configured
 
 All six control migrations are applied. Health, response security headers, a
-generated correlation ID, and unauthenticated rejection were verified against
-the deployed Worker.
+generated correlation ID, unauthenticated rejection, and authenticated
+management audit access were verified against the deployed Worker.
 
 ## Remaining launch blockers
 
-- Run an authenticated management smoke request from a trusted secret-aware
-  client.
 - Provision one explicitly approved pilot project and verify its D1/file
   isolation before connecting an application.
 
 The primary management key was issued once and only its SHA-256 is stored in D1.
-Loss of the raw key requires an audited bootstrap/rotation procedure.
+The initially lost management key was revoked and replaced. Only the replacement
+key hash is active in D1. Loss of its raw value requires another audited rotation.
 
 Run the authenticated smoke without putting the key in command history:
 
@@ -33,3 +32,5 @@ $env:MINIBASE_MANAGEMENT_KEY = Read-Host "Management key"
 npm.cmd run smoke:production
 Remove-Item Env:MINIBASE_MANAGEMENT_KEY
 ```
+
+Last authenticated smoke: passed on 2026-07-29, service version `0.22.1`.
