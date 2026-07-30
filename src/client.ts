@@ -65,7 +65,7 @@ export class MiniBaseClient {
   constructor(options: MiniBaseClientOptions) {
     this.baseUrl = validateBaseUrl(options.baseUrl);
     this.key = validateKey(options.key);
-    this.requestFetch = options.fetch ?? fetch;
+    this.requestFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

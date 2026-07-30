@@ -411,6 +411,16 @@ not inferred from infrastructure approval.
 The change is limited to the proven onboarding contract defect. No project was
 provisioned before the fixed Worker passed the complete local gate.
 
+## 2026-07-30 — Iteration 29: browser SDK fetch binding
+
+- Reproduced `TypeError: Illegal invocation` in a real Chrome onboarding e2e.
+- Bound the default native `fetch` to `globalThis` while preserving injected
+  fetch implementations used by tests and server consumers.
+- Added a regression test that verifies the native fetch receiver.
+
+This is a client SDK-only correction. It does not change the deployed Worker
+runtime or its bindings.
+
 ## 2026-07-29 — Iteration 27: management key recovery and launch acceptance
 
 - Revoked the lost initial owner management key.

@@ -22,6 +22,22 @@ describe("MiniBase client", () => {
     );
   });
 
+  it("binds the native fetch to its global context", async () => {
+    const nativeFetch = vi.spyOn(globalThis, "fetch").mockImplementation(function (this: unknown) {
+      expect(this).toBe(globalThis);
+      return Promise.resolve(Response.json({ records: [], nextAfter: null }));
+    });
+    const client = new MiniBaseClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_publishable_test-client",
+    });
+
+    await client.list("lesson_items");
+
+    expect(nativeFetch).toHaveBeenCalledOnce();
+    nativeFetch.mockRestore();
+  });
+
   it("serializes writes and supports empty delete responses", async () => {
     const requestFetch = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ id: "a", data: { title: "A" }, updatedAt: "now" }))
