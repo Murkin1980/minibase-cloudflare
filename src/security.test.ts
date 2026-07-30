@@ -37,6 +37,10 @@ describe("MiniBase security contract", () => {
       slug: "tutor-kz",
       name: "1C Tutor",
     });
+    expect(parseCreateProject({ slug: "1c-tutor-kz", name: "1C Tutor KZ" })).toEqual({
+      slug: "1c-tutor-kz",
+      name: "1C Tutor KZ",
+    });
     expect(() => parseCreateProject({ slug: "../escape", name: "Bad" })).toThrow();
   });
 

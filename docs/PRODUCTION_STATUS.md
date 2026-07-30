@@ -1,6 +1,6 @@
 # Production status
 
-Last verified: 2026-07-29
+Last verified: 2026-07-30
 
 ## Active resources
 
@@ -34,3 +34,7 @@ Remove-Item Env:MINIBASE_MANAGEMENT_KEY
 ```
 
 Last authenticated smoke: passed on 2026-07-29, service version `0.22.1`.
+
+Onboarding regression note: version `0.22.2` permits approved project slugs
+starting with an ASCII digit, including `1c-tutor-kz`. Deployment and
+post-deployment smoke must pass before provisioning resumes.

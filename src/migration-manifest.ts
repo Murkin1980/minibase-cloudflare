@@ -19,7 +19,7 @@ export interface MigrationManifest {
 
 const hashPattern = /^[a-f0-9]{64}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const slugPattern = /^[a-z][a-z0-9-]{2,39}$/;
+const slugPattern = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const pathPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
 const kinds = new Set(["schema", "table", "auth-identities", "storage-metadata", "storage-object"]);
 const formats = new Set(["json", "ndjson", "sql", "binary"]);

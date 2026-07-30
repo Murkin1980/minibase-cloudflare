@@ -1,6 +1,6 @@
 import type { CreateDataKeyRequest, CreateManagementKeyRequest, CreateProjectRequest } from "./contracts";
 
-const slugPattern = /^[a-z][a-z0-9-]{2,39}$/;
+const slugPattern = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const managementScopes = new Set(["projects:write", "keys:write", "audit:read"]);
 
 export function parseCreateProject(value: unknown): CreateProjectRequest {

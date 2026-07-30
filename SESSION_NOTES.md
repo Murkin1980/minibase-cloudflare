@@ -397,6 +397,20 @@ local production config exists. Runtime secret and pilot gates remain separate.
 Authenticated smoke awaits a trusted local key entry. Pilot project creation is
 not inferred from infrastructure approval.
 
+## 2026-07-30 — Iteration 28: numeric project slug regression fix
+
+- Reproduced `invalid_slug` while onboarding the approved `1c-tutor-kz` project.
+- Updated project and migration-manifest slug validation to allow an ASCII
+  digit as the first character while retaining the existing length and
+  character restrictions.
+- Added a regression assertion for the exact `1c-tutor-kz` slug.
+- Bumped the Worker health version to `0.22.2`.
+- Full `npm run check` passed: lint, typecheck, 55 tests, D1 integration,
+  release readiness, Worker integration, and build.
+
+The change is limited to the proven onboarding contract defect. No project was
+provisioned before the fixed Worker passed the complete local gate.
+
 ## 2026-07-29 — Iteration 27: management key recovery and launch acceptance
 
 - Revoked the lost initial owner management key.
