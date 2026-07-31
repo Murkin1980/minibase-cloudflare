@@ -1,5 +1,16 @@
 # MiniBase session notes
 
+## 2026-07-31 — Iteration 30: Access-backed user isolation
+
+- Added cryptographic Cloudflare Access JWT verification (RS256, issuer, audience, expiry, subject and JWK `kid`).
+- Added `mb_session_*` exchange and current-session revoke endpoints.
+- Stored only session-token hashes and project-bound subject hashes in control D1 migration `0007_user_sessions.sql`.
+- Isolated record IDs, file metadata paths and R2 object keys by hashed subject while preserving logical IDs/paths in API responses.
+- Extended the zero-dependency client with session exchange/logout.
+- Kept project publishable/secret key behavior unchanged for backward compatibility.
+
+Production is intentionally not claimed: Access variables, route policy, migration 0007, deployment and a two-user smoke remain acceptance gates.
+
 ## 2026-07-28 — Iteration 1: safe MB0/MB1 import
 
 ### Completed

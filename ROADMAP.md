@@ -9,8 +9,9 @@ MB5 Supabase move   [##########] 100%
 MB6 Client SDK      [##########] 100%
 MB7 Hardening       [##########] 100%
 MB8 Launch          [##########] 100%
+MB9 User isolation  [########--]  80%
 
-Overall             [##########] 100%
+Overall             [#########-]  98%
 ```
 
 ## Gates
@@ -29,3 +30,7 @@ Overall             [##########] 100%
 - MB8: production infrastructure, secrets, migrations, public smoke, and
   authenticated management smoke are complete. Pilot projects are independent
   onboarding decisions.
+- MB9: Access JWT verification, hashed user sessions, records/files owner
+  isolation and local gates are implemented. Production remains incomplete
+  until Access variables, route policy, migration 0007 and two-user smoke are
+  explicitly approved and verified.

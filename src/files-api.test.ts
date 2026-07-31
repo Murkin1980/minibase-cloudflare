@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { validateFilePath, validateUpload } from "./files-api";
+import { ownerFilePrefix, physicalFilePath, validateFilePath, validateUpload } from "./files-api";
 
 describe("files API boundaries", () => {
+  it("isolates session files with a hashed owner prefix", () => {
+    const principal = {
+      keyId: "session",
+      projectId: "project",
+      databaseId: "db",
+      kind: "publishable" as const,
+      scopes: ["files:read"],
+      subjectHash: "b".repeat(64),
+    };
+    expect(ownerFilePrefix(principal)).toBe(`u_${"b".repeat(64)}/`);
+    expect(physicalFilePath(principal, "screens/a.png")).toBe(`u_${"b".repeat(64)}/screens/a.png`);
+  });
+
   it("accepts safe nested paths and rejects traversal", () => {
     expect(validateFilePath("lessons/intro.pdf")).toBe("lessons/intro.pdf");
     expect(() => validateFilePath("../secret")).toThrow("invalid_file_path");

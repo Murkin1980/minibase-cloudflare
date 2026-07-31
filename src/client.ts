@@ -40,7 +40,11 @@ function validateBaseUrl(value: string): string {
 }
 
 function validateKey(value: string): string {
-  if (!value.startsWith("mb_publishable_") && !value.startsWith("mb_secret_")) {
+  if (
+    !value.startsWith("mb_publishable_") &&
+    !value.startsWith("mb_secret_") &&
+    !value.startsWith("mb_session_")
+  ) {
     throw new Error("invalid_client_key");
   }
   return value;
@@ -93,6 +97,16 @@ export class MiniBaseClient {
     if (!collectionPattern.test(collection)) throw new Error("invalid_collection");
     if (id !== undefined && !recordIdPattern.test(id)) throw new Error("invalid_record_id");
     return `/v1/data/${encodeURIComponent(collection)}${id === undefined ? "" : `/${encodeURIComponent(id)}`}`;
+  }
+
+  exchangeAccessSession(): Promise<{ token: string; expiresAt: string }> {
+    if (!this.key.startsWith("mb_publishable_")) throw new Error("session_exchange_requires_publishable_key");
+    return this.request("/v1/sessions/exchange", { method: "POST" });
+  }
+
+  endSession(): Promise<void> {
+    if (!this.key.startsWith("mb_session_")) throw new Error("session_required");
+    return this.request("/v1/sessions/current", { method: "DELETE" });
   }
 
   list<T extends Record<string, unknown>>(

@@ -1,5 +1,19 @@
 # MiniBase
 
+## Access-backed user sessions
+
+Закрытые приложения могут обменять project-scoped `mb_publishable_*` key и проверенный Cloudflare Access JWT на восьмичасовую `mb_session_*` сессию:
+
+```http
+POST /v1/sessions/exchange
+Authorization: Bearer mb_publishable_...
+Cf-Access-Jwt-Assertion: <injected by Cloudflare Access>
+```
+
+Worker проверяет RS256 signature, issuer, audience, expiry и subject по официальным Access JWK. Raw subject и raw session token не сохраняются: control D1 получает только project-bound SHA-256 subject hash и token hash. Records и files session principal автоматически изолируются этим hash. `DELETE /v1/sessions/current` отзывает текущую сессию.
+
+Этот режим требует, чтобы MiniBase Worker был защищён тем же Cloudflare Access application boundary. Заголовок identity нельзя принимать без криптографической проверки.
+
 Компактный multi-project BaaS на Cloudflare Workers, D1 и R2.
 
 Статус: MB0/MB1 — архитектурный каркас и control plane. Production deployment

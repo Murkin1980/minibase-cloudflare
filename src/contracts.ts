@@ -45,6 +45,8 @@ export interface MiniBaseEnv {
   FILES: R2Bucket;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_D1_API_TOKEN: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
   RATE_LIMITER?: {
     limit(options: { key: string }): Promise<{ success: boolean }>;
   };
@@ -61,6 +63,7 @@ export interface DataPrincipal {
   databaseId: string;
   kind: "publishable" | "secret";
   scopes: string[];
+  subjectHash?: string;
 }
 
 export interface D1HttpQueryResult<T = Record<string, unknown>> {

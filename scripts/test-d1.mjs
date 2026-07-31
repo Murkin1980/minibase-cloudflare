@@ -20,6 +20,7 @@ try {
     "migrations/0004_data_keys.sql",
     "migrations/0005_project_origins.sql",
     "migrations/0006_project_schema_version.sql",
+    "migrations/0007_user_sessions.sql",
   ]) {
     const sql = await readFile(new URL(`../${migration}`, import.meta.url), "utf8");
     for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean)) {
@@ -65,6 +66,11 @@ try {
   assert.equal(originTable.name, "project_origins");
   const projectColumns = await db.prepare("PRAGMA table_info(projects)").all();
   assert.ok(projectColumns.results.some((column) => column.name === "data_schema_version"));
+  const sessionColumns = await db.prepare("PRAGMA table_info(user_sessions)").all();
+  const sessionColumnNames = new Set(sessionColumns.results.map((column) => column.name));
+  for (const expected of ["token_hash", "subject_hash", "expires_at", "last_used_at", "revoked_at"]) {
+    assert.ok(sessionColumnNames.has(expected), `missing user_sessions.${expected}`);
+  }
 
   const atomicHash = "b".repeat(64);
   await assert.rejects(db.batch([

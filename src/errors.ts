@@ -13,6 +13,12 @@ const statusByCode: Record<string, number> = {
   idempotency_key_reused_with_different_request: 409,
   cloudflare_api_error: 502,
   rate_limited: 429,
+  access_identity_required: 401,
+  invalid_access_assertion: 401,
+  session_exchange_forbidden: 403,
+  session_required: 403,
+  access_not_configured: 503,
+  access_keys_unavailable: 503,
 };
 
 const clientErrorCodes = new Set([

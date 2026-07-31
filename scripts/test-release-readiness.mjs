@@ -6,10 +6,13 @@ const result = await inspectReleaseReadiness(undefined, "wrangler.test-missing.j
 assert.equal(result.status, "blocked");
 assert.ok(result.issues.includes("owner_approval_required:wrangler.test-missing.jsonc"));
 assert.ok(!result.issues.some((issue) => issue.startsWith("missing:")));
+const readyFixture = await inspectReleaseReadiness(undefined, "scripts/fixtures/wrangler.ready.jsonc");
+assert.equal(readyFixture.status, "ready");
 const cli = spawnSync(process.execPath, ["scripts/release-readiness.mjs"], {
   cwd: new URL("../", import.meta.url),
   encoding: "utf8",
 });
-assert.equal(cli.status, 0);
-assert.match(cli.stdout, /"status": "ready"/);
-process.stdout.write("Release readiness gate covers blocked fixture and ready production config\n");
+assert.equal(cli.status, 2);
+assert.match(cli.stdout, /"status": "blocked"/);
+assert.match(cli.stdout, /owner_approval_required:wrangler\.jsonc/);
+process.stdout.write("Release readiness gate is portable and keeps absent production config blocked\n");

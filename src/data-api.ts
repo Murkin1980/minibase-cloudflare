@@ -35,11 +35,17 @@ interface RecordRow {
 }
 
 const present = (row: RecordRow) => ({
-  id: row.id,
+  id: row.id.includes(":") && row.id.startsWith("u_") ? row.id.slice(row.id.indexOf(":") + 1) : row.id,
   data: JSON.parse(row.data) as unknown,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
+
+export const ownerPrefix = (principal: DataPrincipal) =>
+  principal.subjectHash ? `u_${principal.subjectHash}:` : "";
+
+export const physicalRecordId = (principal: DataPrincipal, id: string) =>
+  `${ownerPrefix(principal)}${id}`;
 
 export async function listRecords(
   env: MiniBaseEnv,
@@ -47,21 +53,33 @@ export async function listRecords(
   collection: string,
   query: { limit: number; after?: string },
 ) {
+  const prefix = ownerPrefix(principal);
+  const sql = principal.subjectHash
+    ? `SELECT id, data, created_at, updated_at FROM mb_records
+        WHERE collection = ? AND id > ? AND id < ?
+        ORDER BY id LIMIT ?`
+    : `SELECT id, data, created_at, updated_at FROM mb_records
+        WHERE collection = ? AND id > ? ORDER BY id LIMIT ?`;
+  const values = principal.subjectHash
+    ? [collection, physicalRecordId(principal, query.after ?? ""), `${prefix}\uffff`, query.limit]
+    : [collection, query.after ?? "", query.limit];
   const result = await queryProjectD1<RecordRow>(
     env,
     principal.databaseId,
-    `SELECT id, data, created_at, updated_at FROM mb_records
-      WHERE collection = ? AND id > ? ORDER BY id LIMIT ?`,
-    [collection, query.after ?? "", query.limit],
+    sql,
+    values,
   );
-  return { records: result.results.map(present), nextAfter: result.results.at(-1)?.id ?? null };
+  return {
+    records: result.results.map(present),
+    nextAfter: result.results.at(-1) ? present(result.results.at(-1)!).id : null,
+  };
 }
 
 export async function getRecord(env: MiniBaseEnv, principal: DataPrincipal, collection: string, id: string) {
   const result = await queryProjectD1<RecordRow>(
     env, principal.databaseId,
     "SELECT id, data, created_at, updated_at FROM mb_records WHERE collection = ? AND id = ? LIMIT 1",
-    [collection, id],
+    [collection, physicalRecordId(principal, id)],
   );
   if (!result.results[0]) throw new Error("record_not_found");
   return present(result.results[0]);
@@ -80,7 +98,7 @@ export async function putRecord(
     `INSERT INTO mb_records (collection, id, data, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(collection, id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
-    [collection, id, JSON.stringify(data), now, now],
+    [collection, physicalRecordId(principal, id), JSON.stringify(data), now, now],
   );
   return { id, data, updatedAt: now };
 }
@@ -94,6 +112,6 @@ export async function deleteRecord(
   await queryProjectD1(
     env, principal.databaseId,
     "DELETE FROM mb_records WHERE collection = ? AND id = ?",
-    [collection, id],
+    [collection, physicalRecordId(principal, id)],
   );
 }

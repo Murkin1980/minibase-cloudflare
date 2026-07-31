@@ -1,5 +1,15 @@
 # MiniBase data API
 
+## User sessions
+
+- `POST /v1/sessions/exchange` — обмен publishable project key и валидного Cloudflare Access assertion на краткоживущий `mb_session_*`;
+- `DELETE /v1/sessions/current` — отзыв текущей session token;
+- session token поддерживает только унаследованные `data:read`/`data:write` scopes;
+- одинаковые collection/id у разных Access subjects физически хранятся под разными hashed owner prefixes;
+- list/get/put/delete никогда не возвращают physical owner prefix клиенту.
+
+Project secret/publishable keys сохраняют прежнюю project-wide семантику для доверенных backend и закрытого single-owner compatibility.
+
 ## Records
 
 - `GET /v1/data/{collection}`

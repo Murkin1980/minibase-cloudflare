@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseListQuery, validateCollection, validateRecordData, validateRecordId } from "./data-api";
-import { dataKeyRecordIsAuthorized } from "./data-auth";
+import { ownerPrefix, parseListQuery, physicalRecordId, validateCollection, validateRecordData, validateRecordId } from "./data-api";
+import { dataKeyRecordIsAuthorized, sessionRecordIsAuthorized } from "./data-auth";
 
 describe("data-plane boundaries", () => {
   it("accepts only value-safe collection and record identifiers", () => {
@@ -36,5 +36,36 @@ describe("data-plane boundaries", () => {
     expect(dataKeyRecordIsAuthorized(row, "data:write", new Date("2029-01-01"))).toBe(false);
     expect(dataKeyRecordIsAuthorized({ ...row, status: "suspended" }, "data:read", new Date("2029-01-01"))).toBe(false);
     expect(dataKeyRecordIsAuthorized({ ...row, revoked_at: "2028-01-01" }, "data:read", new Date("2029-01-01"))).toBe(false);
+  });
+
+  it("isolates session records with a non-reversible subject hash", () => {
+    const principal = {
+      keyId: "session",
+      projectId: "project",
+      databaseId: "db",
+      kind: "publishable" as const,
+      scopes: ["data:read"],
+      subjectHash: "a".repeat(64),
+    };
+    expect(ownerPrefix(principal)).toBe(`u_${"a".repeat(64)}:`);
+    expect(physicalRecordId(principal, "lesson:1")).toBe(`u_${"a".repeat(64)}:lesson:1`);
+    expect(physicalRecordId({ ...principal, subjectHash: undefined }, "lesson:1")).toBe("lesson:1");
+  });
+
+  it("enforces session scope, expiry, revocation, project, and database state", () => {
+    const row = {
+      id: "session",
+      project_id: "project",
+      subject_hash: "a".repeat(64),
+      scopes: "data:read,data:write",
+      expires_at: "2030-01-01T00:00:00Z",
+      revoked_at: null,
+      d1_database_id: "db",
+      status: "active",
+    };
+    expect(sessionRecordIsAuthorized(row, "data:read", new Date("2029-01-01"))).toBe(true);
+    expect(sessionRecordIsAuthorized(row, "files:read", new Date("2029-01-01"))).toBe(false);
+    expect(sessionRecordIsAuthorized({ ...row, revoked_at: "2028-01-01" }, "data:read", new Date("2029-01-01"))).toBe(false);
+    expect(sessionRecordIsAuthorized(row, "data:read", new Date("2031-01-01"))).toBe(false);
   });
 });

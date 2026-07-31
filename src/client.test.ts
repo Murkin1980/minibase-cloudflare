@@ -2,6 +2,37 @@ import { describe, expect, it, vi } from "vitest";
 import { MiniBaseClient, MiniBaseClientError } from "./client";
 
 describe("MiniBase client", () => {
+  it("exchanges a publishable key for an Access-backed user session", async () => {
+    const requestFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      token: "mb_session_user",
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    }, { status: 201 }));
+    const client = new MiniBaseClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_publishable_project",
+      fetch: requestFetch,
+    });
+    await expect(client.exchangeAccessSession()).resolves.toEqual({
+      token: "mb_session_user",
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    });
+    expect(requestFetch).toHaveBeenCalledWith(
+      "https://minibase.example/v1/sessions/exchange",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(() => new MiniBaseClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_session_user",
+      fetch: requestFetch,
+    }).exchangeAccessSession()).toThrow("session_exchange_requires_publishable_key");
+    const sessionClient = new MiniBaseClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_session_user",
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 204 })),
+    });
+    await expect(sessionClient.endSession()).resolves.toBeUndefined();
+  });
+
   it("sends an authenticated encoded records request", async () => {
     const requestFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
       records: [],

@@ -42,7 +42,7 @@ export function addCorsHeaders(response: Response, request: Request): Response {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
   headers.set("access-control-allow-headers", "authorization, content-type");
-  headers.set("access-control-allow-methods", "GET, PUT, DELETE, OPTIONS");
+  headers.set("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
   headers.set("access-control-max-age", "600");
   headers.append("vary", "Origin");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });

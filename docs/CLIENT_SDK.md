@@ -25,6 +25,19 @@ never enter application bundles.
 Non-local HTTP base URLs are rejected. API failures throw
 `MiniBaseClientError` with stable `code` and numeric `status`.
 
+## Access session
+
+```ts
+const bootstrap = new MiniBaseClient({ baseUrl, key: publishableKey });
+const { token, expiresAt } = await bootstrap.exchangeAccessSession();
+const userClient = new MiniBaseClient({ baseUrl, key: token });
+
+await userClient.put("progress", "lesson-1", { completed: true });
+await userClient.endSession();
+```
+
+Cloudflare Access injects the assertion at the protected Worker boundary. Application JavaScript does not read, store or construct that assertion. Session tokens must remain in memory where practical and must never be committed or logged.
+
 File downloads return the original streaming `Response`. Uploads accept a
 `Blob`, forwarding its exact size and media type; file paths receive the same
 traversal checks as the Worker.

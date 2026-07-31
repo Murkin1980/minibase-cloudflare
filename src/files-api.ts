@@ -23,7 +23,14 @@ export function validateUpload(request: Request): { size: number; contentType: s
   };
 }
 
-const objectKey = (principal: DataPrincipal, path: string) => `${principal.projectId}/${path}`;
+export const ownerFilePrefix = (principal: DataPrincipal) =>
+  principal.subjectHash ? `u_${principal.subjectHash}/` : "";
+
+export const physicalFilePath = (principal: DataPrincipal, path: string) =>
+  `${ownerFilePrefix(principal)}${path}`;
+
+const objectKey = (principal: DataPrincipal, path: string) =>
+  `${principal.projectId}/${physicalFilePath(principal, path)}`;
 
 export async function uploadFile(
   env: MiniBaseEnv,
@@ -47,7 +54,7 @@ export async function uploadFile(
        ON CONFLICT(path) DO UPDATE SET
          size = excluded.size, content_type = excluded.content_type,
          etag = excluded.etag, updated_at = excluded.updated_at`,
-      [path, size, contentType, object.etag, now, now],
+      [physicalFilePath(principal, path), size, contentType, object.etag, now, now],
     );
   } catch (error) {
     await env.FILES.delete(key);
@@ -73,7 +80,7 @@ export async function downloadFile(
   const metadata = await queryProjectD1<FileRow>(
     env, principal.databaseId,
     "SELECT path, size, content_type, etag, created_at, updated_at FROM mb_files WHERE path = ? LIMIT 1",
-    [path],
+    [physicalFilePath(principal, path)],
   );
   if (!metadata.results[0]) throw new Error("file_not_found");
   const object = await env.FILES.get(objectKey(principal, path));
@@ -93,7 +100,12 @@ export async function deleteFile(
   path: string,
 ): Promise<void> {
   await env.FILES.delete(objectKey(principal, path));
-  await queryProjectD1(env, principal.databaseId, "DELETE FROM mb_files WHERE path = ?", [path]);
+  await queryProjectD1(
+    env,
+    principal.databaseId,
+    "DELETE FROM mb_files WHERE path = ?",
+    [physicalFilePath(principal, path)],
+  );
 }
 
 export async function listFiles(
@@ -105,17 +117,26 @@ export async function listFiles(
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_limit");
   const after = url.searchParams.get("after") ?? "";
   if (after) validateFilePath(after);
+  const prefix = ownerFilePrefix(principal);
+  const sql = principal.subjectHash
+    ? `SELECT path, size, content_type, etag, created_at, updated_at
+         FROM mb_files WHERE path > ? AND path < ? ORDER BY path LIMIT ?`
+    : `SELECT path, size, content_type, etag, created_at, updated_at
+         FROM mb_files WHERE path > ? ORDER BY path LIMIT ?`;
+  const values = principal.subjectHash
+    ? [physicalFilePath(principal, after), `${prefix}\uffff`, limit]
+    : [after, limit];
   const result = await queryProjectD1<FileRow>(
     env, principal.databaseId,
-    `SELECT path, size, content_type, etag, created_at, updated_at
-       FROM mb_files WHERE path > ? ORDER BY path LIMIT ?`,
-    [after, limit],
+    sql,
+    values,
   );
+  const presentPath = (path: string) => principal.subjectHash ? path.slice(prefix.length) : path;
   return {
     files: result.results.map((row) => ({
-      path: row.path, size: row.size, contentType: row.content_type, etag: row.etag,
+      path: presentPath(row.path), size: row.size, contentType: row.content_type, etag: row.etag,
       createdAt: row.created_at, updatedAt: row.updated_at,
     })),
-    nextAfter: result.results.at(-1)?.path ?? null,
+    nextAfter: result.results.at(-1) ? presentPath(result.results.at(-1)!.path) : null,
   };
 }

@@ -5,7 +5,11 @@ export async function sha256(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export type MiniBaseKeyPrefix = "mb_publishable_" | "mb_secret_" | "mb_management_";
+export type MiniBaseKeyPrefix =
+  | "mb_publishable_"
+  | "mb_secret_"
+  | "mb_management_"
+  | "mb_session_";
 
 export function randomToken(prefix: MiniBaseKeyPrefix): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));

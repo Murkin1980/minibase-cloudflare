@@ -28,6 +28,7 @@ import { parseOrigins, replaceProjectOrigins } from "./project-origins";
 import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
 import { hardenResponse, resolveRequestId } from "./response-security";
 import { requestIsAllowed } from "./abuse-control";
+import { createUserSession, revokeCurrentSession } from "./user-sessions";
 
 const json = (body: unknown, status = 200) => Response.json(body, {
   status,
@@ -38,9 +39,9 @@ const application = {
   async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.22.2" });
+      return json({ service: "minibase", status: "ok", version: "0.23.0" });
     }
-    if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
+    if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$)|sessions\/exchange$)/.test(url.pathname)) {
       return preflightResponse(request);
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
@@ -53,6 +54,28 @@ const application = {
       try {
         const input = parseCreateProject(await readJsonBounded(request));
         return json(await provisionProject(env, input, idempotencyKey, actor.keyId), 201);
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/v1/sessions/exchange") {
+      try {
+        const principal = await authenticateDataKey(env, request, "data:read");
+        if (!principal) return errorResponse(new Error("unauthorized"));
+        if (!await dataOriginIsAllowed(env, principal.projectId, request)) {
+          return errorResponse(new Error("origin_not_allowed"));
+        }
+        return addCorsHeaders(json(await createUserSession(env, request, principal), 201), request);
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    if (request.method === "DELETE" && url.pathname === "/v1/sessions/current") {
+      try {
+        const principal = await authenticateDataKey(env, request, "data:read");
+        if (!principal) return errorResponse(new Error("unauthorized"));
+        await revokeCurrentSession(env, principal);
+        return new Response(null, { status: 204 });
       } catch (error) {
         return errorResponse(error);
       }
