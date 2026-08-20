@@ -1,4 +1,5 @@
 import type { CloudflareD1, CloudflareResponse, CreateProjectRequest, MiniBaseEnv } from "./contracts";
+import { initialPublishableKeyScopes, initialSecretKeyScopes } from "./key-scopes";
 import { projectSchemaMigrations } from "./project-schema";
 import { randomToken, sha256 } from "./security";
 
@@ -106,10 +107,16 @@ export async function provisionProject(
     await env.CONTROL_DB.batch([
       env.CONTROL_DB.prepare(
         "INSERT INTO api_keys (id, project_id, kind, key_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      ).bind(crypto.randomUUID(), projectId, "publishable", await sha256(publishableKey), "data:read,data:write", now),
+      ).bind(
+        crypto.randomUUID(), projectId, "publishable", await sha256(publishableKey),
+        initialPublishableKeyScopes.join(","), now,
+      ),
       env.CONTROL_DB.prepare(
         "INSERT INTO api_keys (id, project_id, kind, key_hash, scopes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      ).bind(crypto.randomUUID(), projectId, "secret", await sha256(secretKey), "project:admin", now),
+      ).bind(
+        crypto.randomUUID(), projectId, "secret", await sha256(secretKey),
+        initialSecretKeyScopes.join(","), now,
+      ),
       env.CONTROL_DB.prepare(
         `UPDATE projects
             SET status = 'active', d1_database_id = ?, data_schema_version = ?, updated_at = ?

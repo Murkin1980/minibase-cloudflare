@@ -2,8 +2,8 @@
 
 Компактный multi-project BaaS на Cloudflare Workers, D1 и R2.
 
-Статус: MB0/MB1 — архитектурный каркас и control plane. Production deployment
-ещё не создан.
+Статус: внутренняя BaaS-инфраструктура развёрнута; подключение первого пилотного
+проекта остаётся отдельной итерацией.
 
 ## Возможности каркаса
 
@@ -99,7 +99,10 @@ Content-Type: application/json
 
 ## Модель подключения
 
-Клиентское приложение получает только URL API и `mb_publishable_*`.
+Клиентское приложение получает только URL API и read-only `mb_publishable_*`.
+Запись данных и файлов разрешена только доверенному backend с `mb_secret_*`;
+до появления пользовательской Auth и row-level authorization браузерные
+write-scopes намеренно запрещены.
 `mb_secret_*` допустим исключительно в доверенном backend. Создание проекта
 выполняется control plane с `mb_management_*`; Cloudflare API token остаётся
 секретом Worker.

@@ -15,3 +15,9 @@ launch must remain blocked until the owner explicitly approves:
 
 The Cloudflare D1 API token remains a Worker secret. It must never appear in
 client configuration, SDK bundles, logs, migration archives, or API responses.
+
+`mb_publishable_*` is safe to expose only because it is restricted to
+`data:read` and `files:read`. Browser write access is not equivalent to
+authorization: `data:write`, `files:write`, and `project:admin` require a
+backend-only `mb_secret_*` key. End-user writes require an authenticated,
+row-level authorization layer rather than broader publishable-key scopes.

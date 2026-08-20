@@ -18,7 +18,8 @@ only their SHA-256 hashes.
 
 These operations require a management key with `keys:write`. A raw key is
 returned once at creation. Publishable keys may use only `data:read` and
-`data:write`; `project:admin` is restricted to secret keys.
+`files:read`. All write scopes and `project:admin` are restricted to secret
+keys until MiniBase has end-user authentication and row-level authorization.
 
 ## Project schema
 

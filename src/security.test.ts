@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { managementKeyRecordIsAuthorized } from "./management-keys";
+import { initialPublishableKeyScopes, initialSecretKeyScopes } from "./key-scopes";
 import { provisioningFingerprint } from "./provision";
 import { randomToken } from "./security";
 import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
@@ -67,6 +68,8 @@ describe("MiniBase security contract", () => {
   });
 
   it("restricts scopes by data-key kind", () => {
+    expect(initialPublishableKeyScopes).toEqual(["data:read", "files:read"]);
+    expect(initialSecretKeyScopes).toEqual(["project:admin"]);
     expect(parseCreateDataKey({
       name: "browser",
       kind: "publishable",
@@ -77,10 +80,25 @@ describe("MiniBase security contract", () => {
       kind: "publishable",
       scopes: ["project:admin"],
     })).toThrow("invalid_scopes");
+    expect(() => parseCreateDataKey({
+      name: "browser writer",
+      kind: "publishable",
+      scopes: ["data:write"],
+    })).toThrow("invalid_scopes");
+    expect(() => parseCreateDataKey({
+      name: "browser uploader",
+      kind: "publishable",
+      scopes: ["files:write"],
+    })).toThrow("invalid_scopes");
     expect(parseCreateDataKey({
       name: "backend",
       kind: "secret",
       scopes: ["project:admin"],
     }).kind).toBe("secret");
+    expect(parseCreateDataKey({
+      name: "backend writer",
+      kind: "secret",
+      scopes: ["data:write", "files:write"],
+    }).scopes).toEqual(["data:write", "files:write"]);
   });
 });

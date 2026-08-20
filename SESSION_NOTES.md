@@ -432,3 +432,18 @@ runtime or its bindings.
 
 MB8 and the MiniBase infrastructure project are accepted at 100%. Connecting
 1C Tutor or another pilot remains a separately scoped onboarding iteration.
+
+## 2026-08-20 — Iteration 30: publishable keys are read-only
+
+- Restricted `mb_publishable_*` to `data:read` and `files:read`.
+- Restricted all record/file writes and `project:admin` to backend-only
+  `mb_secret_*` keys.
+- Changed newly provisioned projects to issue a read-only initial publishable
+  key and centralized the key-scope contract.
+- Added regression coverage for rejected browser write scopes and documented
+  the trust boundary.
+
+MiniBase still has no end-user authentication or row-level authorization.
+Browser writes must remain disabled until that capability is designed and
+accepted separately. No project, Cloudflare resource, or deployment was
+created or changed in this iteration.
