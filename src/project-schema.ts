@@ -52,6 +52,69 @@ export const projectSchemaMigrations: ProjectSchemaMigration[] = [
       "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (3, datetime('now'))",
     ],
   },
+  {
+    version: 4,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS mb_users (
+        id TEXT PRIMARY KEY,
+        email_normalized TEXT,
+        phone_e164 TEXT,
+        confirmed_at TEXT,
+        required_action TEXT NOT NULL CHECK (required_action IN ('activation', 'none')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'suspended')),
+        auth_version INTEGER NOT NULL DEFAULT 1 CHECK (auth_version >= 1),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (email_normalized),
+        UNIQUE (phone_e164),
+        CHECK (email_normalized IS NOT NULL OR phone_e164 IS NOT NULL)
+      )`,
+      `CREATE TABLE IF NOT EXISTS mb_activation_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES mb_users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS mb_organization_memberships (
+        organization_id TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES mb_users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (length(role) BETWEEN 1 AND 64),
+        status TEXT NOT NULL CHECK (status IN ('invited', 'active', 'suspended')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (organization_id, user_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS mb_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES mb_users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+        auth_version INTEGER NOT NULL CHECK (auth_version >= 1),
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_reason TEXT,
+        rotated_from_session_id TEXT REFERENCES mb_sessions(id) ON DELETE SET NULL,
+        last_used_at TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS mb_auth_audit_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES mb_users(id) ON DELETE SET NULL,
+        organization_id TEXT,
+        action TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'denied', 'failed')),
+        metadata TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS mb_memberships_user_status_idx ON mb_organization_memberships(user_id, status)",
+      "CREATE INDEX IF NOT EXISTS mb_activation_user_active_idx ON mb_activation_tokens(user_id, used_at, revoked_at, expires_at)",
+      "CREATE INDEX IF NOT EXISTS mb_sessions_user_active_idx ON mb_sessions(user_id, revoked_at, expires_at)",
+      "CREATE INDEX IF NOT EXISTS mb_auth_audit_created_idx ON mb_auth_audit_events(created_at DESC)",
+      "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (4, datetime('now'))",
+    ],
+  },
 ];
 
 export function pendingProjectSchemaVersions(currentVersion: number): ProjectSchemaMigration[] {

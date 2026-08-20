@@ -473,3 +473,20 @@ No production deployment or Cloudflare resource was changed.
 
 The existing rate-limit binding is reused; no paid feature, production binding,
 deployment, or Cloudflare resource was created or changed.
+
+## 2026-08-20 — Iteration 33: identity schema foundation
+
+- Added project schema v4 with native users, hash-only one-time activation,
+  authoritative organization memberships, opaque sessions, and auth audit.
+- Sessions include expiry, revocation reason, rotation lineage, auth version,
+  and last-use fields; there is no password or provider-token column.
+- Documented the dependency-free pilot activation flow and remaining runtime gates.
+- Added regression coverage for ordering, lifecycle fields, membership keys,
+  and forbidden credential storage.
+- Made the release-readiness gate test portable: it now verifies the ready path
+  against a committed fixture instead of relying on a local, gitignored
+  `wrangler.jsonc`, and still asserts the CLI blocks (exit 2) when the real
+  production config is absent.
+
+No user was created, no token/session was issued, and no production schema,
+deployment, paid feature, Supabase project, or Cloudflare resource was changed.
