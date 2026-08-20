@@ -1,5 +1,28 @@
 import type { MiniBaseEnv } from "./contracts";
 
+export async function recordAudit(
+  env: MiniBaseEnv,
+  action: string,
+  outcome: "success" | "denied" | "failed",
+  actorKeyId: string | null,
+  projectId: string | null = null,
+  metadata?: Record<string, string>,
+): Promise<void> {
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO audit_events
+      (id, project_id, action, created_at, actor_key_id, outcome, metadata)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    crypto.randomUUID(),
+    projectId,
+    action,
+    new Date().toISOString(),
+    actorKeyId,
+    outcome,
+    metadata ? JSON.stringify(metadata) : null,
+  ).run();
+}
+
 export interface AuditQuery {
   limit: number;
   before?: string;

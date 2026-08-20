@@ -3,6 +3,7 @@ import type {
   ManagementPrincipal,
   MiniBaseEnv,
 } from "./contracts";
+import { recordAudit } from "./audit";
 import { randomToken, sha256 } from "./security";
 
 interface ManagementKeyRow {
@@ -30,29 +31,6 @@ export function managementKeyRecordIsAuthorized(
   const expiry = row.expires_at ? Date.parse(row.expires_at) : null;
   if (expiry !== null && (!Number.isFinite(expiry) || expiry <= now.getTime())) return false;
   return parseScopes(row.scopes).includes(requiredScope);
-}
-
-export async function recordAudit(
-  env: MiniBaseEnv,
-  action: string,
-  outcome: "success" | "denied" | "failed",
-  actorKeyId: string | null,
-  projectId: string | null = null,
-  metadata?: Record<string, string>,
-): Promise<void> {
-  await env.CONTROL_DB.prepare(
-    `INSERT INTO audit_events
-      (id, project_id, action, created_at, actor_key_id, outcome, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(
-    crypto.randomUUID(),
-    projectId,
-    action,
-    new Date().toISOString(),
-    actorKeyId,
-    outcome,
-    metadata ? JSON.stringify(metadata) : null,
-  ).run();
 }
 
 export async function authenticateManagementKey(

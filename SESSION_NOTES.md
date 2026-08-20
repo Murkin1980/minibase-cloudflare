@@ -447,3 +447,17 @@ MiniBase still has no end-user authentication or row-level authorization.
 Browser writes must remain disabled until that capability is designed and
 accepted separately. No project, Cloudflare resource, or deployment was
 created or changed in this iteration.
+
+## 2026-08-20 — Iteration 31: data-plane authentication audit
+
+- Moved the shared audit writer into the audit module.
+- Added denied `data.auth` events for missing, unknown, revoked, expired, scoped,
+  inactive-project, and unavailable-project authentication failures.
+- Store only the denial reason, required scope, and known key/project IDs; raw
+  bearer values are never written to audit metadata.
+- Kept successful authentication low-noise through the existing `last_used_at`
+  update.
+- Added focused tests for denial classification, safe audit payloads, and the
+  no-success-audit boundary.
+
+No production deployment or Cloudflare resource was changed.

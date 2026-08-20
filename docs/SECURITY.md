@@ -21,3 +21,8 @@ client configuration, SDK bundles, logs, migration archives, or API responses.
 authorization: `data:write`, `files:write`, and `project:admin` require a
 backend-only `mb_secret_*` key. End-user writes require an authenticated,
 row-level authorization layer rather than broader publishable-key scopes.
+
+Denied management and data-plane authentication attempts are written to the
+control-D1 audit log with a reason and, when known, key/project IDs. Raw bearer
+tokens are never included. Successful data authentication updates `last_used_at`
+without creating a high-volume audit event.
