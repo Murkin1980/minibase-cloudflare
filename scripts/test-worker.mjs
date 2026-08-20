@@ -48,7 +48,7 @@ try {
 
   const health = await mf.dispatchFetch("https://minibase.test/health");
   assert.equal(health.status, 200);
-  assert.equal((await health.json()).version, "0.22.4");
+  assert.equal((await health.json()).version, "0.22.5");
 
   const unauthorized = await mf.dispatchFetch(`https://minibase.test/v1/projects/${projectId}/keys`);
   assert.equal(unauthorized.status, 401);

@@ -26,3 +26,8 @@ Denied management and data-plane authentication attempts are written to the
 control-D1 audit log with a reason and, when known, key/project IDs. Raw bearer
 tokens are never included. Successful data authentication updates `last_used_at`
 without creating a high-volume audit event.
+
+Every non-health request is limited first by route class and client IP. Requests
+that carry a bearer credential are additionally limited by a SHA-256 credential
+identity. Rotating arbitrary invalid bearer strings therefore cannot bypass the
+shared IP ceiling, and raw credentials never become rate-limit keys.

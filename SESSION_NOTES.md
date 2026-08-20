@@ -461,3 +461,15 @@ created or changed in this iteration.
   no-success-audit boundary.
 
 No production deployment or Cloudflare resource was changed.
+
+## 2026-08-20 — Iteration 32: dual abuse-control ceilings
+
+- Apply a route-scoped client-IP limit to every non-health request.
+- Apply an additional SHA-256 bearer-identity limit when a credential exists.
+- Prevent attackers from bypassing the shared ceiling by rotating arbitrary
+  invalid bearer strings.
+- Added regression coverage for IP sharing, distinct credential buckets, and
+  raw-token exclusion.
+
+The existing rate-limit binding is reused; no paid feature, production binding,
+deployment, or Cloudflare resource was created or changed.
