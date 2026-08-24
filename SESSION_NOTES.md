@@ -498,3 +498,21 @@ deployment, or Cloudflare resource was created or changed.
 
 No user was created, no token/session was issued, and no production schema,
 deployment, paid feature, Supabase project, or Cloudflare resource was changed.
+
+## 2026-08-25 — Iteration 34: Interactive KP onboarding
+
+- Deployed MiniBase `0.23.0` to the existing `minibase-cloudflare` Worker;
+  Cloudflare version ID: `6c5f014d-7028-4097-9896-832672890128`.
+- Provisioned the `interactive-kp` tenant (project ID
+  `58e27c56-0374-4a3f-84c5-90dca9bfcb3e`) on schema v4 with D1 database ID
+  `22250945-ad19-44e4-a18f-9012983bd5f6` in EEUR.
+- Allowed `https://kp.salamat-mebel.kz` and `http://localhost:3000` origins.
+- Stored `MINIBASE_URL` and `MINIBASE_SECRET_KEY` as encrypted secrets on the
+  existing `interactive-kp` Worker. No secret value was written to the repo.
+- Revoked the one-time management key used for provisioning and verified the
+  tenant, schema, origins, and revocation state from the control plane.
+- Cloudflare Access policy creation remains pending because the current
+  Wrangler OAuth grant has no Access Apps/Policies write permission.
+
+Supabase remains only a temporary migration source for Interactive KP. The
+accepted target runtime and system of record is MiniBase.
