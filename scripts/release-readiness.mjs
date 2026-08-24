@@ -37,7 +37,7 @@ export async function inspectReleaseReadiness(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const result = await inspectReleaseReadiness();
+  const result = await inspectReleaseReadiness(undefined, process.argv[2] ?? "wrangler.jsonc");
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   process.exitCode = result.status === "ready" ? 0 : 2;
 }

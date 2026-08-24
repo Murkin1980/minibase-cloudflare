@@ -1,5 +1,13 @@
 # MiniBase session notes
 
+## 2026-08-25 — release-readiness portability fix
+
+- Reproduced the release-readiness subprocess test failing only when a valid,
+  gitignored production `wrangler.jsonc` exists in the checkout.
+- Added an optional CLI config-path argument and made the blocked-path test pass
+  an explicit missing fixture name.
+- Production readiness behavior remains unchanged when no argument is supplied.
+
 ## 2026-07-28 — Iteration 1: safe MB0/MB1 import
 
 ### Completed
