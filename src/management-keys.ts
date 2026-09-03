@@ -4,6 +4,8 @@ import type {
   MiniBaseEnv,
 } from "./contracts";
 import { recordAudit } from "./audit";
+import { keyActivityUpdateIsDue } from "./data-auth";
+import { resolveLimits } from "./limits";
 import { randomToken, sha256 } from "./security";
 
 interface ManagementKeyRow {
@@ -11,6 +13,7 @@ interface ManagementKeyRow {
   scopes: string;
   expires_at: string | null;
   revoked_at: string | null;
+  last_used_at: string | null;
 }
 
 const parseBearer = (request: Request): string | null => {
@@ -37,15 +40,22 @@ export async function authenticateManagementKey(
   env: MiniBaseEnv,
   request: Request,
   requiredScope: string,
+  correlationId?: string,
 ): Promise<ManagementPrincipal | null> {
+  const audit = (actorKeyId: string | null, metadata: Record<string, string>) =>
+    recordAudit(env, "management.auth", "denied", actorKeyId, null, metadata, {
+      entity: "management_key",
+      ...(actorKeyId ? { entityId: actorKeyId } : {}),
+      ...(correlationId ? { correlationId } : {}),
+    });
   const token = parseBearer(request);
   if (!token) {
-    await recordAudit(env, "management.auth", "denied", null, null, { reason: "missing_key" });
+    await audit(null, { reason: "missing_key" });
     return null;
   }
 
   const row = await env.CONTROL_DB.prepare(
-    `SELECT id, scopes, expires_at, revoked_at
+    `SELECT id, scopes, expires_at, revoked_at, last_used_at
        FROM management_keys
       WHERE key_hash = ?`,
   ).bind(await sha256(token)).first<ManagementKeyRow>();
@@ -53,16 +63,18 @@ export async function authenticateManagementKey(
   const scopes = row ? parseScopes(row.scopes) : [];
   const expired = Boolean(row?.expires_at && new Date(row.expires_at) <= now);
   if (!row || !managementKeyRecordIsAuthorized(row, requiredScope, now)) {
-    await recordAudit(env, "management.auth", "denied", row?.id ?? null, null, {
+    await audit(row?.id ?? null, {
       reason: !row ? "unknown_key" : row.revoked_at ? "revoked" : expired ? "expired" : "scope",
       requiredScope,
     });
     return null;
   }
 
-  await env.CONTROL_DB.prepare(
-    "UPDATE management_keys SET last_used_at = ? WHERE id = ?",
-  ).bind(now.toISOString(), row.id).run();
+  if (keyActivityUpdateIsDue(row.last_used_at, now, resolveLimits(env).keyActivityIntervalMs)) {
+    await env.CONTROL_DB.prepare(
+      "UPDATE management_keys SET last_used_at = ? WHERE id = ?",
+    ).bind(now.toISOString(), row.id).run();
+  }
   return { keyId: row.id, scopes };
 }
 

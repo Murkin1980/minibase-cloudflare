@@ -7,7 +7,13 @@ export interface MiniBaseRecord<T extends Record<string, unknown>> {
 
 export interface MiniBaseList<T extends Record<string, unknown>> {
   records: MiniBaseRecord<T>[];
+  /** Last cursor of this page. Always present while `records` is non-empty. */
   nextAfter: string | null;
+  /**
+   * Whether another page exists. Prefer this over testing `nextAfter` for null:
+   * `nextAfter` is also returned on a short final page.
+   */
+  hasMore: boolean;
 }
 
 export class MiniBaseClientError extends Error {
@@ -137,6 +143,7 @@ export class MiniBaseClient {
   listFiles(options: { limit?: number; after?: string } = {}): Promise<{
     files: Array<{ path: string; size: number; contentType: string | null; etag: string; createdAt: string; updatedAt: string }>;
     nextAfter: string | null;
+    hasMore: boolean;
   }> {
     const query = new URLSearchParams();
     if (options.limit !== undefined) {

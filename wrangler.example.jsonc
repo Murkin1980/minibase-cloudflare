@@ -20,5 +20,16 @@
       "binding": "FILES",
       "bucket_name": "replace-with-minibase-files-bucket"
     }
-  ]
+  ],
+  // Optional request ceilings. Omit to keep the built-in defaults
+  // (64 KiB JSON, 25 MiB file, 100 records per page). An override that is not a
+  // positive integer within its hard ceiling is ignored, so a typo can never
+  // widen an unbounded request. See src/limits.ts and docs/SCALABILITY.md.
+  //
+  // "vars": {
+  //   "MB_MAX_JSON_BYTES": "65536",
+  //   "MB_MAX_FILE_BYTES": "26214400",
+  //   "MB_MAX_PAGE_SIZE": "100",
+  //   "MB_MAX_BULK_RECORDS": "500"
+  // }
 }

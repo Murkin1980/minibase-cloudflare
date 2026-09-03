@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MiniBaseEnv } from "./contracts";
-import { authenticateDataKey, dataKeyDenialReason } from "./data-auth";
+import { authenticateDataKey, dataKeyDenialReason, keyActivityUpdateIsDue } from "./data-auth";
 
 interface TestDataKeyRow {
   id: string;
@@ -11,6 +11,7 @@ interface TestDataKeyRow {
   revoked_at: string | null;
   d1_database_id: string;
   status: string;
+  last_used_at: string | null;
 }
 
 const activeRow: TestDataKeyRow = {
@@ -22,6 +23,7 @@ const activeRow: TestDataKeyRow = {
   revoked_at: null,
   d1_database_id: "database-1",
   status: "active",
+  last_used_at: null,
 };
 
 function authEnv(row: TestDataKeyRow | null) {
@@ -79,6 +81,23 @@ describe("data authentication audit", () => {
     expect(JSON.stringify(state.auditBindings[0])).not.toContain(rawToken);
     expect(state.auditBindings[0]).toContain("denied");
     expect(state.auditBindings[0]).toContain('{"reason":"unknown_key","requiredScope":"data:read"}');
+  });
+
+  it("throttles key-activity writes without weakening the access decision", () => {
+    const now = new Date("2026-09-03T12:00:00Z");
+    const fiveMinutes = 5 * 60 * 1000;
+    // Never used: record it.
+    expect(keyActivityUpdateIsDue(null, now, fiveMinutes)).toBe(true);
+    expect(keyActivityUpdateIsDue(undefined, now, fiveMinutes)).toBe(true);
+    expect(keyActivityUpdateIsDue("not-a-date", now, fiveMinutes)).toBe(true);
+    // Recently used: skip the write.
+    expect(keyActivityUpdateIsDue("2026-09-03T11:59:00Z", now, fiveMinutes)).toBe(false);
+    expect(keyActivityUpdateIsDue("2026-09-03T11:55:00Z", now, fiveMinutes)).toBe(true);
+    // A stale future value must not suppress writes forever.
+    expect(keyActivityUpdateIsDue("2027-01-01T00:00:00Z", now, fiveMinutes)).toBe(false);
+    // The throttle never changes authorization: a revoked key is still denied.
+    expect(dataKeyDenialReason({ ...activeRow, revoked_at: "2028-01-01" }, "data:read", now))
+      .toBe("revoked");
   });
 
   it("audits known-key denial and does not audit successful authentication", async () => {

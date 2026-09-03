@@ -1,5 +1,7 @@
 import type { DataPrincipal, MiniBaseEnv } from "./contracts";
 import { queryProjectD1 } from "./d1-http";
+import { DEFAULT_LIMITS, type MiniBaseLimits } from "./limits";
+import { buildPage, parseCursorQuery, type CursorQuery } from "./pagination";
 
 const collectionPattern = /^[a-z][a-z0-9_-]{1,62}$/;
 const recordIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -14,12 +16,8 @@ export function validateRecordId(value: string): string {
   return value;
 }
 
-export function parseListQuery(url: URL): { limit: number; after?: string } {
-  const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : 50;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_limit");
-  const after = url.searchParams.get("after");
-  if (after) validateRecordId(after);
-  return { limit, ...(after ? { after } : {}) };
+export function parseListQuery(url: URL, limits: MiniBaseLimits = DEFAULT_LIMITS): CursorQuery {
+  return parseCursorQuery(url, limits, validateRecordId);
 }
 
 export function validateRecordData(value: unknown): Record<string, unknown> {
@@ -41,20 +39,33 @@ const present = (row: RecordRow) => ({
   updatedAt: row.updated_at,
 });
 
+/**
+ * Lists one collection in stable record-ID order.
+ *
+ * Ordering is the primary key `(collection, id)`, which is the only order a
+ * keyset cursor over `mb_records` can be stable in. `hasMore` comes from a
+ * `limit + 1` probe row; `nextAfter` keeps its previous meaning (the last
+ * cursor returned) so existing consumers are unaffected.
+ */
 export async function listRecords(
   env: MiniBaseEnv,
   principal: DataPrincipal,
   collection: string,
-  query: { limit: number; after?: string },
+  query: CursorQuery,
 ) {
   const result = await queryProjectD1<RecordRow>(
     env,
     principal.databaseId,
     `SELECT id, data, created_at, updated_at FROM mb_records
       WHERE collection = ? AND id > ? ORDER BY id LIMIT ?`,
-    [collection, query.after ?? "", query.limit],
+    [collection, query.after ?? "", query.limit + 1],
   );
-  return { records: result.results.map(present), nextAfter: result.results.at(-1)?.id ?? null };
+  const page = buildPage(result.results, query.limit, (row) => row.id);
+  return {
+    records: page.items.map(present),
+    nextAfter: page.nextAfter,
+    hasMore: page.hasMore,
+  };
 }
 
 export async function getRecord(env: MiniBaseEnv, principal: DataPrincipal, collection: string, id: string) {

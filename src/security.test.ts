@@ -22,6 +22,7 @@ describe("MiniBase security contract", () => {
       scopes: "projects:write,keys:write",
       expires_at: "2030-01-01T00:00:00Z",
       revoked_at: null,
+      last_used_at: null,
     };
     expect(managementKeyRecordIsAuthorized(active, "projects:write", new Date("2029-01-01"))).toBe(true);
     expect(managementKeyRecordIsAuthorized(active, "audit:read", new Date("2029-01-01"))).toBe(false);

@@ -12,7 +12,13 @@
 - `mb_publishable_*`, `mb_secret_*` и отдельный `mb_management_*`;
 - хэширование ключей, scope, отзыв и аудит в управляющей базе;
 - применение начальной схемы через Cloudflare D1 API;
-- состояния provisioning и безопасный повтор операции.
+- состояния provisioning и безопасный повтор операции;
+- курсорная пагинация с однозначным `hasMore`;
+- настраиваемые лимиты запросов с жёсткими максимумами;
+- аудит с `entity`, `entity_id` и `correlation_id`.
+
+Архитектура описана в [ARCHITECTURE.md](ARCHITECTURE.md). Аудит масштабируемости,
+риски и план checkpoint'ов — в [docs/SCALABILITY.md](docs/SCALABILITY.md).
 
 ## Локальная проверка
 
@@ -77,6 +83,10 @@ database ID и никогда не получает Cloudflare token.
 - `GET /v1/data/{collection}/{id}` — одна запись (`data:read`);
 - `PUT /v1/data/{collection}/{id}` — upsert JSON-объекта (`data:write`);
 - `DELETE /v1/data/{collection}/{id}` — удаление (`data:write`).
+
+Списки используют keyset-пагинацию: `limit` и `after`, а признак конца —
+поле `hasMore`. `nextAfter` сохраняется для совместимости, но продолжать
+обход следует по `hasMore`.
 
 Collection и record ID проходят allowlist-валидацию, а SQL и database UUID не
 принимаются из публичного request body.
