@@ -42,8 +42,9 @@ together with the conditions for revisiting it.
 
 Consequences that shape the design:
 
-- **one statement per call**, so there is no multi-statement transaction on the
-  data plane — atomicity has to come from single statements;
+- **`queryProjectD1` posts a single `{sql, params}` per call**, so the data plane
+  as built has no multi-statement transaction — atomicity has to come from
+  single statements;
 - **one HTTPS round trip per query**, so round trips must be minimized rather
   than assumed cheap;
 - **the account's D1 quota is shared** across every project, so per-request
