@@ -1,5 +1,94 @@
 # MiniBase session notes
 
+## 2026-09-03 — Iteration 35: MiniBase vNext CP-01 foundation hardening
+
+Decision for the MPE data-platform upgrade: **EXTEND_EXISTING**. No new
+repository, database engine, backend, or paid resource. A full read-only audit of
+the code at `4b5b987` is recorded in `docs/SCALABILITY.md`, together with the
+risk list, target architecture, gap matrix, and the CP-01…CP-10 plan.
+
+### What the audit found
+
+- The API was already versioned under `/v1`, so the planned "API versioning
+  foundation" was a duplicate of something that exists. It was dropped.
+- The Supabase migration library (`migration-manifest`, `-import`,
+  `-verification`, `-rollback`, `postgres-sqlite`, `auth-migration`) is complete
+  and tested but no HTTP route reaches it. It is library-only.
+- `src/index.ts` routing had no test at all; the router was covered only by
+  control-plane assertions in `scripts/test-worker.mjs`.
+- `listRecords` and `listFiles` returned a non-null `nextAfter` on a short final
+  page, so a consumer could not tell when enumeration ended. Reproduced before
+  changing it: `limit=100` over a 2-record collection returned `nextAfter: "r2"`.
+- Uploads stored the client-declared `Content-Length` as the file size rather
+  than the bytes R2 actually received.
+- `x-minibase-request-id` was returned to every caller but stored nowhere, so an
+  audit event could not be tied back to the request that produced it.
+- Measured by instrumenting the real handler: one authenticated data read cost
+  three control-D1 statements (key read, `last_used_at` write, origin read) plus
+  one outbound D1 REST call.
+
+### Driving external change
+
+Cloudflare began hard-enforcing D1 free-tier daily row limits on **2026-09-01**,
+on both the Workers Binding API and the REST API. Because MiniBase wrote one
+control-D1 row per authenticated data request, the whole deployment — all
+projects together — was capped near the 100 000 row-write daily limit, and
+unauthenticated traffic consumed the same quota through audit inserts. Key
+activity is now written at most once per key per interval (default 5 minutes).
+Revocation, expiry, project status, and scopes are still checked on every
+request, so authorization is unchanged.
+
+### Implemented in CP-01
+
+- `src/limits.ts`: one source of truth for every request ceiling, overridable by
+  Worker `vars`, with hard maxima. Invalid overrides fall back to the default
+  rather than widening a limit.
+- `src/pagination.ts`: shared keyset cursor parsing plus a `limit + 1` probe that
+  yields `hasMore`. `nextAfter` semantics are unchanged, so existing consumers
+  are unaffected.
+- `src/idempotency.ts`: the provisioning `Idempotency-Key` behaviour extracted
+  verbatim for reuse by future write commands. `provisioningFingerprint` was
+  pinned by a test so the persisted `request_hash` values cannot drift.
+- `migrations/0007_audit_contract.sql`: `entity`, `entity_id`, `correlation_id`
+  on `audit_events`, plus indexes. `recordAudit` threads them, and the request ID
+  already computed in `index.ts` now reaches the audit log.
+- `src/files-api.ts`: measured upload size from the streamed body, `content-length`
+  on download taken from the R2 object rather than possibly stale metadata, and
+  `projectObjectKey` exported so isolation is directly testable.
+- `src/test-harness.ts`: a double for the control D1, the D1 REST API, and R2 that
+  lets tests drive the real `index.ts` handler. Used for new isolation,
+  pagination, limit, idempotency, audit, control-plane cost, and consumer
+  compatibility tests.
+- `scripts/test-migrations.mjs`: control migration contract — ordered, unique,
+  contiguous, non-destructive, no duplicated `ADD COLUMN`. Added to
+  `npm run check`.
+
+### Deliberately not done
+
+- No project schema v5. A checksum or `uploaded_at` column would make the Worker
+  write a column that the live `interactive-kp` tenant does not have until it runs
+  `schema/apply`. That is deferred to CP-06 with a coordinated migration.
+- No filtering, sorting, or field selection. No real consumer needs them yet, and
+  adding them without an index story would create scans. Deferred to CP-04.
+- No change to the D1 REST hop. That is ADR-0001's "revisit when" condition and
+  would be a deep change; it stays gated until CP-10 produces measurements.
+
+### Verification
+
+`npm run check` passed: lint, typecheck, 104 vitest tests across 25 files, D1
+integration, the new migration contract, release readiness, worker integration
+against the built bundle, and the production dry-run build. Baseline before the
+change was 61 tests across 19 files. Test count was confirmed stable across three
+consecutive runs. Bundle 53.09 KiB -> 58.06 KiB (gzip 12.10 KiB).
+
+Deep change detected: **NO**.
+
+GitHub Actions was not run: the owner's limit is exhausted. Local `npm run check`
+is the quality gate, per `docs/LOCAL_VALIDATION_POLICY.md`. No Cloudflare
+resource, secret, schema, or deployment was touched, and no secret value was
+written to the repository.
+
+
 ## 2026-08-25 — release-readiness portability fix
 
 - Reproduced the release-readiness subprocess test failing only when a valid,

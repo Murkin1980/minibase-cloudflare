@@ -31,6 +31,7 @@ describe("data-plane boundaries", () => {
       revoked_at: null,
       d1_database_id: "db",
       status: "active",
+      last_used_at: null,
     };
     expect(dataKeyRecordIsAuthorized(row, "data:read", new Date("2029-01-01"))).toBe(true);
     expect(dataKeyRecordIsAuthorized(row, "data:write", new Date("2029-01-01"))).toBe(false);

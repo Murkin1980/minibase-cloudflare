@@ -25,9 +25,25 @@ row-level authorization layer rather than broader publishable-key scopes.
 Denied management and data-plane authentication attempts are written to the
 control-D1 audit log with a reason and, when known, key/project IDs. Raw bearer
 tokens are never included. Successful data authentication updates `last_used_at`
-without creating a high-volume audit event.
+at most once per key per configured interval, without creating an audit event.
+
+Since 2026-09-01 the D1 free tier hard-fails past its daily row-write limit, so a
+control-plane write on every authenticated request would have capped the whole
+deployment — every project together — at that limit. Throttling key-activity
+writes removes that coupling. It does not weaken authorization: revocation,
+expiry, project status, and scopes are re-checked from the row on every single
+request.
+
+Every audit row now carries `entity`, `entity_id`, and `correlation_id`. The
+correlation ID is the `x-minibase-request-id` the caller already receives, so a
+support report can be matched to the events it produced without storing request
+payloads.
 
 Every non-health request is limited first by route class and client IP. Requests
 that carry a bearer credential are additionally limited by a SHA-256 credential
 identity. Rotating arbitrary invalid bearer strings therefore cannot bypass the
 shared IP ceiling, and raw credentials never become rate-limit keys.
+
+Request ceilings are configurable per deployment and bounded by hard maxima; see
+`docs/DATA_API.md`. An invalid override falls back to the default rather than
+widening a limit.

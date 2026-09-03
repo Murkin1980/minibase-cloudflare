@@ -1,4 +1,22 @@
 import type { MiniBaseEnv } from "./contracts";
+import { DEFAULT_LIMITS, type MiniBaseLimits } from "./limits";
+
+/**
+ * Audit event contract (docs/DATA_MODEL.md).
+ *
+ * Append-only: nothing in MiniBase updates or deletes an `audit_events` row.
+ * `entity` / `entityId` name the affected resource so an operator can answer
+ * "what happened to this project/key" without scanning metadata blobs, and
+ * `correlationId` joins an event to the `x-minibase-request-id` a caller
+ * already receives, so a support request can be traced end to end.
+ *
+ * Deliberately not stored: raw bearer tokens, key hashes, and record payloads.
+ */
+export interface AuditContext {
+  entity?: "project" | "data_key" | "management_key" | "file" | "origin";
+  entityId?: string;
+  correlationId?: string;
+}
 
 export async function recordAudit(
   env: MiniBaseEnv,
@@ -7,11 +25,13 @@ export async function recordAudit(
   actorKeyId: string | null,
   projectId: string | null = null,
   metadata?: Record<string, string>,
+  context: AuditContext = {},
 ): Promise<void> {
   await env.CONTROL_DB.prepare(
     `INSERT INTO audit_events
-      (id, project_id, action, created_at, actor_key_id, outcome, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      (id, project_id, action, created_at, actor_key_id, outcome, metadata,
+       entity, entity_id, correlation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     crypto.randomUUID(),
     projectId,
@@ -20,6 +40,9 @@ export async function recordAudit(
     actorKeyId,
     outcome,
     metadata ? JSON.stringify(metadata) : null,
+    context.entity ?? null,
+    context.entityId ?? null,
+    context.correlationId ?? null,
   ).run();
 }
 
@@ -28,10 +51,10 @@ export interface AuditQuery {
   before?: string;
 }
 
-export function parseAuditQuery(url: URL): AuditQuery {
+export function parseAuditQuery(url: URL, limits: MiniBaseLimits = DEFAULT_LIMITS): AuditQuery {
   const limitValue = url.searchParams.get("limit");
-  const limit = limitValue === null ? 50 : Number(limitValue);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_limit");
+  const limit = limitValue === null ? limits.defaultPageSize : Number(limitValue);
+  if (!Number.isInteger(limit) || limit < 1 || limit > limits.maxPageSize) throw new Error("invalid_limit");
   const before = url.searchParams.get("before");
   if (before && !Number.isFinite(Date.parse(before))) throw new Error("invalid_before");
   return { limit, ...(before ? { before } : {}) };
@@ -45,12 +68,16 @@ interface AuditRow {
   actor_key_id: string | null;
   outcome: string;
   metadata: string | null;
+  entity: string | null;
+  entity_id: string | null;
+  correlation_id: string | null;
 }
 
 export async function listAuditEvents(env: MiniBaseEnv, query: AuditQuery) {
   const condition = query.before ? "WHERE created_at < ?" : "";
   const statement = env.CONTROL_DB.prepare(
-    `SELECT id, project_id, action, created_at, actor_key_id, outcome, metadata
+    `SELECT id, project_id, action, created_at, actor_key_id, outcome, metadata,
+            entity, entity_id, correlation_id
        FROM audit_events
        ${condition}
       ORDER BY created_at DESC, id DESC
@@ -67,6 +94,9 @@ export async function listAuditEvents(env: MiniBaseEnv, query: AuditQuery) {
     actorKeyId: row.actor_key_id,
     outcome: row.outcome,
     metadata: row.metadata ? JSON.parse(row.metadata) as unknown : null,
+    entity: row.entity,
+    entityId: row.entity_id,
+    correlationId: row.correlation_id,
   }));
   return {
     events,

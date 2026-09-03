@@ -1,8 +1,8 @@
-const DEFAULT_MAX_JSON_BYTES = 64 * 1024;
+import { DEFAULT_LIMITS } from "./limits";
 
 export async function readJsonBounded(
   request: Request,
-  maxBytes = DEFAULT_MAX_JSON_BYTES,
+  maxBytes = DEFAULT_LIMITS.maxJsonBytes,
 ): Promise<unknown> {
   const contentType = request.headers.get("content-type")?.split(";")[0].trim();
   if (contentType !== "application/json") throw new Error("content_type_must_be_application_json");

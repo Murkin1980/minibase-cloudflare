@@ -1,4 +1,5 @@
 import type { CloudflareD1, CloudflareResponse, CreateProjectRequest, MiniBaseEnv } from "./contracts";
+import { decideIdempotentReplay, fingerprintRequest } from "./idempotency";
 import { initialPublishableKeyScopes, initialSecretKeyScopes } from "./key-scopes";
 import { projectSchemaMigrations } from "./project-schema";
 import { randomToken, sha256 } from "./security";
@@ -13,12 +14,17 @@ interface ExistingJob {
   rollback_status: string | null;
 }
 
+/**
+ * Fingerprint of a provisioning request. The normalized key order is part of the
+ * persisted `provisioning_jobs.request_hash` contract: changing it would make
+ * every already-stored idempotency key look like a conflicting request.
+ */
 export async function provisioningFingerprint(input: CreateProjectRequest): Promise<string> {
-  return sha256(JSON.stringify({
+  return fingerprintRequest({
     slug: input.slug,
     name: input.name,
     region: input.region ?? null,
-  }));
+  });
 }
 
 async function cloudflareRequest<T>(env: MiniBaseEnv, path: string, init: RequestInit): Promise<T> {
@@ -35,7 +41,7 @@ async function cloudflareRequest<T>(env: MiniBaseEnv, path: string, init: Reques
 }
 
 function replay(existing: ExistingJob, requestHash: string) {
-  if (existing.request_hash && existing.request_hash !== requestHash) {
+  if (decideIdempotentReplay(existing.request_hash, requestHash) === "conflict") {
     throw new Error("idempotency_key_reused_with_different_request");
   }
   return {

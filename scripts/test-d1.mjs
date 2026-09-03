@@ -20,6 +20,7 @@ try {
     "migrations/0004_data_keys.sql",
     "migrations/0005_project_origins.sql",
     "migrations/0006_project_schema_version.sql",
+    "migrations/0007_audit_contract.sql",
   ]) {
     const sql = await readFile(new URL(`../${migration}`, import.meta.url), "utf8");
     for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean)) {
@@ -65,6 +66,31 @@ try {
   assert.equal(originTable.name, "project_origins");
   const projectColumns = await db.prepare("PRAGMA table_info(projects)").all();
   assert.ok(projectColumns.results.some((column) => column.name === "data_schema_version"));
+  const auditColumns = await db.prepare("PRAGMA table_info(audit_events)").all();
+  const auditColumnNames = new Set(auditColumns.results.map((column) => column.name));
+  for (const expected of ["entity", "entity_id", "correlation_id"]) {
+    assert.ok(auditColumnNames.has(expected), `missing audit_events.${expected}`);
+  }
+
+  const auditId = randomUUID();
+  const correlationId = randomUUID();
+  await db.prepare(
+    `INSERT INTO audit_events
+      (id, project_id, action, created_at, actor_key_id, outcome, metadata,
+       entity, entity_id, correlation_id)
+     VALUES (?, NULL, 'data.auth', ?, NULL, 'denied', ?, 'data_key', NULL, ?)`,
+  ).bind(auditId, new Date().toISOString(), '{"reason":"unknown_key"}', correlationId).run();
+  const auditRow = await db.prepare(
+    "SELECT action, outcome, entity, entity_id, correlation_id FROM audit_events WHERE id = ?",
+  ).bind(auditId).first();
+  assert.equal(auditRow.entity, "data_key");
+  assert.equal(auditRow.entity_id, null);
+  assert.equal(auditRow.correlation_id, correlationId);
+  assert.equal(
+    await db.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE correlation_id = ?")
+      .bind(correlationId).first("count"),
+    1,
+  );
 
   const atomicHash = "b".repeat(64);
   await assert.rejects(db.batch([

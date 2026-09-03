@@ -1,7 +1,8 @@
 import type { DataPrincipal, MiniBaseEnv } from "./contracts";
 import { queryProjectD1 } from "./d1-http";
+import { DEFAULT_LIMITS, resolveLimits, type MiniBaseLimits } from "./limits";
+import { buildPage, parseCursorQuery } from "./pagination";
 
-const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const pathPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
 
 export function validateFilePath(value: string): string {
@@ -11,11 +12,14 @@ export function validateFilePath(value: string): string {
   return value;
 }
 
-export function validateUpload(request: Request): { size: number; contentType: string } {
+export function validateUpload(
+  request: Request,
+  limits: MiniBaseLimits = DEFAULT_LIMITS,
+): { size: number; contentType: string } {
   const rawLength = request.headers.get("content-length");
   const size = rawLength === null ? Number.NaN : Number(rawLength);
   if (!Number.isInteger(size) || size < 0) throw new Error("content_length_required");
-  if (size > MAX_FILE_BYTES) throw new Error("file_too_large");
+  if (size > limits.maxFileBytes) throw new Error("file_too_large");
   if (!request.body) throw new Error("request_body_required");
   return {
     size,
@@ -23,21 +27,53 @@ export function validateUpload(request: Request): { size: number; contentType: s
   };
 }
 
-const objectKey = (principal: DataPrincipal, path: string) => `${principal.projectId}/${path}`;
+/**
+ * R2 object key for a file. The project ID prefix always comes from the
+ * authenticated principal, never from the request, so one project cannot name
+ * another project's object. This is the whole of MiniBase's file isolation.
+ */
+export function projectObjectKey(principal: DataPrincipal, path: string): string {
+  return `${principal.projectId}/${path}`;
+}
+
+/**
+ * Counts bytes as they stream through, so the stored size is measured rather
+ * than believed. `Content-Length` remains a cheap pre-check that rejects an
+ * oversized upload before a single byte is read; the persisted value is what
+ * R2 actually received.
+ */
+function byteCountingStream(source: ReadableStream<Uint8Array>, maxBytes: number) {
+  const counter = { bytes: 0, overflowed: false };
+  const stream = source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      counter.bytes += chunk.byteLength;
+      if (counter.bytes > maxBytes) counter.overflowed = true;
+      controller.enqueue(chunk);
+    },
+  }));
+  return { stream, counter };
+}
 
 export async function uploadFile(
   env: MiniBaseEnv,
   principal: DataPrincipal,
   path: string,
   request: Request,
+  limits: MiniBaseLimits = resolveLimits(env),
 ) {
-  const { size, contentType } = validateUpload(request);
-  const key = objectKey(principal, path);
-  const object = await env.FILES.put(key, request.body!, {
+  const { contentType } = validateUpload(request, limits);
+  const key = projectObjectKey(principal, path);
+  const { stream, counter } = byteCountingStream(request.body!, limits.maxFileBytes);
+  const object = await env.FILES.put(key, stream, {
     httpMetadata: { contentType },
     customMetadata: { projectId: principal.projectId },
   });
   if (!object) throw new Error("file_upload_failed");
+  if (counter.overflowed) {
+    await env.FILES.delete(key);
+    throw new Error("file_too_large");
+  }
+  const size = counter.bytes;
   const now = new Date().toISOString();
   try {
     await queryProjectD1(
@@ -76,11 +112,11 @@ export async function downloadFile(
     [path],
   );
   if (!metadata.results[0]) throw new Error("file_not_found");
-  const object = await env.FILES.get(objectKey(principal, path));
+  const object = await env.FILES.get(projectObjectKey(principal, path));
   if (!object?.body) throw new Error("file_not_found");
   const headers = new Headers({
     "content-type": metadata.results[0].content_type || "application/octet-stream",
-    "content-length": String(metadata.results[0].size),
+    "content-length": String(object.size),
     etag: object.httpEtag,
     "cache-control": "private, no-store",
   });
@@ -92,7 +128,7 @@ export async function deleteFile(
   principal: DataPrincipal,
   path: string,
 ): Promise<void> {
-  await env.FILES.delete(objectKey(principal, path));
+  await env.FILES.delete(projectObjectKey(principal, path));
   await queryProjectD1(env, principal.databaseId, "DELETE FROM mb_files WHERE path = ?", [path]);
 }
 
@@ -100,22 +136,22 @@ export async function listFiles(
   env: MiniBaseEnv,
   principal: DataPrincipal,
   url: URL,
+  limits: MiniBaseLimits = resolveLimits(env),
 ) {
-  const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : 50;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_limit");
-  const after = url.searchParams.get("after") ?? "";
-  if (after) validateFilePath(after);
+  const query = parseCursorQuery(url, limits, validateFilePath);
   const result = await queryProjectD1<FileRow>(
     env, principal.databaseId,
     `SELECT path, size, content_type, etag, created_at, updated_at
        FROM mb_files WHERE path > ? ORDER BY path LIMIT ?`,
-    [after, limit],
+    [query.after ?? "", query.limit + 1],
   );
+  const page = buildPage(result.results, query.limit, (row) => row.path);
   return {
-    files: result.results.map((row) => ({
+    files: page.items.map((row) => ({
       path: row.path, size: row.size, contentType: row.content_type, etag: row.etag,
       createdAt: row.created_at, updatedAt: row.updated_at,
     })),
-    nextAfter: result.results.at(-1)?.path ?? null,
+    nextAfter: page.nextAfter,
+    hasMore: page.hasMore,
   };
 }

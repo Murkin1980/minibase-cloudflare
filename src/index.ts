@@ -14,6 +14,8 @@ import {
 import { authenticateDataKey } from "./data-auth";
 import { createDataKey, listDataKeys, revokeDataKey } from "./data-keys";
 import { errorResponse } from "./errors";
+import { parseIdempotencyKey } from "./idempotency";
+import { resolveLimits } from "./limits";
 import { deleteFile, downloadFile, listFiles, uploadFile, validateFilePath } from "./files-api";
 import { reconcileProjectFiles } from "./file-reconciliation";
 import { readJsonBounded } from "./http";
@@ -35,40 +37,38 @@ const json = (body: unknown, status = 200) => Response.json(body, {
 });
 
 const application = {
-  async fetch(request: Request, env: MiniBaseEnv): Promise<Response> {
+  async fetch(request: Request, env: MiniBaseEnv, correlationId: string): Promise<Response> {
     const url = new URL(request.url);
+    const limits = resolveLimits(env);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.23.0" });
+      return json({ service: "minibase", status: "ok", version: "0.24.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
-      const actor = await authenticateManagementKey(env, request, "projects:write");
+      const actor = await authenticateManagementKey(env, request, "projects:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
-      const idempotencyKey = request.headers.get("idempotency-key");
-      if (!idempotencyKey || idempotencyKey.length > 100) {
-        return errorResponse(new Error("invalid_idempotency_key"));
-      }
       try {
-        const input = parseCreateProject(await readJsonBounded(request));
+        const idempotencyKey = parseIdempotencyKey(request.headers.get("idempotency-key"));
+        const input = parseCreateProject(await readJsonBounded(request, limits.maxJsonBytes));
         return json(await provisionProject(env, input, idempotencyKey, actor.keyId), 201);
       } catch (error) {
         return errorResponse(error);
       }
     }
     if (request.method === "POST" && url.pathname === "/v1/management-keys") {
-      const actor = await authenticateManagementKey(env, request, "keys:write");
+      const actor = await authenticateManagementKey(env, request, "keys:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
-        return json(await createManagementKey(env, parseCreateManagementKey(await readJsonBounded(request)), actor), 201);
+        return json(await createManagementKey(env, parseCreateManagementKey(await readJsonBounded(request, limits.maxJsonBytes)), actor), 201);
       } catch (error) {
         return errorResponse(error);
       }
     }
     const revokeMatch = url.pathname.match(/^\/v1\/management-keys\/([0-9a-f-]+)$/);
     if (request.method === "DELETE" && revokeMatch) {
-      const actor = await authenticateManagementKey(env, request, "keys:write");
+      const actor = await authenticateManagementKey(env, request, "keys:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
         await revokeManagementKey(env, revokeMatch[1], actor);
@@ -78,20 +78,20 @@ const application = {
       }
     }
     if (request.method === "GET" && url.pathname === "/v1/audit-events") {
-      const actor = await authenticateManagementKey(env, request, "audit:read");
+      const actor = await authenticateManagementKey(env, request, "audit:read", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
-        return json(await listAuditEvents(env, parseAuditQuery(url)));
+        return json(await listAuditEvents(env, parseAuditQuery(url, limits)));
       } catch (error) {
         return errorResponse(error);
       }
     }
     const originsMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/origins$/);
     if (request.method === "PUT" && originsMatch) {
-      const actor = await authenticateManagementKey(env, request, "projects:write");
+      const actor = await authenticateManagementKey(env, request, "projects:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
-        const origins = parseOrigins(await readJsonBounded(request));
+        const origins = parseOrigins(await readJsonBounded(request, limits.maxJsonBytes));
         await replaceProjectOrigins(env, originsMatch[1], origins, actor);
         return json({ projectId: originsMatch[1], origins });
       } catch (error) {
@@ -100,7 +100,7 @@ const application = {
     }
     const projectKeysMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/keys(?:\/([0-9a-f-]+))?$/);
     if (projectKeysMatch) {
-      const actor = await authenticateManagementKey(env, request, "keys:write");
+      const actor = await authenticateManagementKey(env, request, "keys:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       const projectId = projectKeysMatch[1];
       const keyId = projectKeysMatch[2];
@@ -108,7 +108,7 @@ const application = {
         if (request.method === "GET" && !keyId) return json(await listDataKeys(env, projectId));
         if (request.method === "POST" && !keyId) {
           return json(await createDataKey(
-            env, projectId, parseCreateDataKey(await readJsonBounded(request)), actor,
+            env, projectId, parseCreateDataKey(await readJsonBounded(request, limits.maxJsonBytes)), actor,
           ), 201);
         }
         if (request.method === "DELETE" && keyId) {
@@ -122,7 +122,7 @@ const application = {
     }
     const schemaMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/schema\/apply$/);
     if (request.method === "POST" && schemaMatch) {
-      const actor = await authenticateManagementKey(env, request, "projects:write");
+      const actor = await authenticateManagementKey(env, request, "projects:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
         return json(await applyProjectSchema(env, schemaMatch[1], actor.keyId));
@@ -132,7 +132,7 @@ const application = {
     }
     const reconcileMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/files\/reconcile$/);
     if (request.method === "GET" && reconcileMatch) {
-      const actor = await authenticateManagementKey(env, request, "projects:write");
+      const actor = await authenticateManagementKey(env, request, "projects:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
         return json(await reconcileProjectFiles(env, reconcileMatch[1]));
@@ -146,7 +146,7 @@ const application = {
         const collection = validateCollection(decodeURIComponent(dataMatch[1]));
         const id = dataMatch[2] ? validateRecordId(decodeURIComponent(dataMatch[2])) : null;
         const requiredScope = request.method === "GET" ? "data:read" : "data:write";
-        const principal = await authenticateDataKey(env, request, requiredScope);
+        const principal = await authenticateDataKey(env, request, requiredScope, correlationId, limits);
         if (!principal) return errorResponse(new Error("unauthorized"));
         if (!await dataOriginIsAllowed(env, principal.projectId, request)) {
           return errorResponse(new Error("origin_not_allowed"));
@@ -154,7 +154,7 @@ const application = {
         const cors = (response: Response) => addCorsHeaders(response, request);
         if (request.method === "GET" && id) return cors(json(await getRecord(env, principal, collection, id)));
         if (request.method === "GET" && !id) {
-          return cors(json(await listRecords(env, principal, collection, parseListQuery(url))));
+          return cors(json(await listRecords(env, principal, collection, parseListQuery(url, limits))));
         }
         if (request.method === "PUT" && id) {
           return cors(json(await putRecord(
@@ -162,7 +162,7 @@ const application = {
             principal,
             collection,
             id,
-            validateRecordData(await readJsonBounded(request)),
+            validateRecordData(await readJsonBounded(request, limits.maxJsonBytes)),
           )));
         }
         if (request.method === "DELETE" && id) {
@@ -179,7 +179,7 @@ const application = {
       try {
         const path = fileMatch[1] ? validateFilePath(decodeURIComponent(fileMatch[1])) : null;
         const requiredScope = request.method === "GET" ? "files:read" : "files:write";
-        const principal = await authenticateDataKey(env, request, requiredScope);
+        const principal = await authenticateDataKey(env, request, requiredScope, correlationId, limits);
         if (!principal) return errorResponse(new Error("unauthorized"));
         if (!await dataOriginIsAllowed(env, principal.projectId, request)) {
           return errorResponse(new Error("origin_not_allowed"));
@@ -210,7 +210,7 @@ export default {
       if (!await requestIsAllowed(env, request)) {
         return hardenResponse(errorResponse(new Error("rate_limited")), requestId);
       }
-      return hardenResponse(await application.fetch(request, env), requestId);
+      return hardenResponse(await application.fetch(request, env, requestId), requestId);
     } catch {
       return hardenResponse(errorResponse(new Error("internal_error")), requestId);
     }

@@ -1,3 +1,5 @@
+import type { LimitOverrides } from "./limits";
+
 export interface D1Result<T = Record<string, unknown>> {
   results?: T[];
   success: boolean;
@@ -40,7 +42,7 @@ export interface R2Bucket {
   }>;
 }
 
-export interface MiniBaseEnv {
+export interface MiniBaseEnv extends LimitOverrides {
   CONTROL_DB: D1Database;
   FILES: R2Bucket;
   CLOUDFLARE_ACCOUNT_ID: string;
