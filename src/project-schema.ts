@@ -117,41 +117,228 @@ export const projectSchemaMigrations: ProjectSchemaMigration[] = [
   },
 ];
 
+export const latestKnownProjectSchemaVersion = projectSchemaMigrations.at(-1)?.version ?? 0;
+
+export interface ProjectSchemaState {
+  authoritativeVersion: number;
+  appliedVersions: number[];
+  hasVersionTable: boolean;
+  issues: string[];
+}
+
+export interface ProjectSchemaVerification {
+  projectId: string;
+  status: "ok" | "drift_detected" | "inconsistent";
+  authoritativeVersion: number;
+  cachedVersion: number;
+  latestKnownVersion: number;
+  appliedVersions: number[];
+  pendingVersions: number[];
+  issues: string[];
+}
+
+export interface SchemaApplyResult {
+  previousVersion: number;
+  version: number;
+  applied: number[];
+}
+
 export function pendingProjectSchemaVersions(currentVersion: number): ProjectSchemaMigration[] {
   if (!Number.isInteger(currentVersion) || currentVersion < 0) throw new Error("invalid_schema_version");
   return projectSchemaMigrations.filter((migration) => migration.version > currentVersion);
 }
 
+/**
+ * Reads the authoritative applied schema versions from the project's own D1 database.
+ * The `mb_schema_versions` table in the project database is the single source of truth.
+ */
+export async function inspectProjectSchema(
+  env: MiniBaseEnv,
+  databaseId: string,
+): Promise<ProjectSchemaState> {
+  const tableCheck = await queryProjectD1<{ name: string }>(
+    env,
+    databaseId,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mb_schema_versions'",
+    [],
+  );
+  if (!tableCheck.results || tableCheck.results.length === 0) {
+    return {
+      authoritativeVersion: 0,
+      appliedVersions: [],
+      hasVersionTable: false,
+      issues: [],
+    };
+  }
+
+  const versionsQuery = await queryProjectD1<{ version: number; applied_at: string }>(
+    env,
+    databaseId,
+    "SELECT version, applied_at FROM mb_schema_versions ORDER BY version ASC",
+    [],
+  );
+
+  const appliedVersions = (versionsQuery.results ?? []).map((row) => row.version);
+  const issues: string[] = [];
+
+  if (appliedVersions.some((version) => !Number.isInteger(version) || version <= 0)) {
+    issues.push("invalid_version_number");
+  }
+
+  const sorted = [...appliedVersions].filter((version) => Number.isInteger(version) && version > 0).sort((a, b) => a - b);
+  const maxVersion = sorted.length > 0 ? sorted[sorted.length - 1] : 0;
+
+  if (maxVersion > latestKnownProjectSchemaVersion) {
+    issues.push("unknown_future_version");
+  }
+
+  for (let expected = 1; expected <= maxVersion; expected += 1) {
+    if (!sorted.includes(expected)) {
+      issues.push("missing_version_gap");
+      break;
+    }
+  }
+
+  const authoritativeVersion = issues.includes("missing_version_gap") || issues.includes("invalid_version_number")
+    ? 0
+    : maxVersion;
+
+  return {
+    authoritativeVersion,
+    appliedVersions,
+    hasVersionTable: true,
+    issues,
+  };
+}
+
+/**
+ * Verifies the schema state of a project by comparing the authoritative version
+ * in the project DB against the cached version in the control DB and known migrations.
+ */
+export async function verifyProjectSchema(
+  env: MiniBaseEnv,
+  projectId: string,
+): Promise<ProjectSchemaVerification> {
+  const project = await env.CONTROL_DB.prepare(
+    "SELECT id, slug, d1_database_id, data_schema_version FROM projects WHERE id = ? AND status = 'active'",
+  ).bind(projectId).first<{ id: string; slug: string; d1_database_id: string; data_schema_version: number }>();
+  if (!project?.d1_database_id) throw new Error("project_not_found");
+
+  const state = await inspectProjectSchema(env, project.d1_database_id);
+  const issues = [...state.issues];
+
+  if (!state.hasVersionTable && project.data_schema_version > 0) {
+    issues.push("missing_schema_versions_table");
+  }
+  if (state.authoritativeVersion !== project.data_schema_version) {
+    issues.push("control_version_mismatch");
+  }
+
+  let status: "ok" | "drift_detected" | "inconsistent" = "ok";
+  if (
+    issues.includes("missing_version_gap") ||
+    issues.includes("unknown_future_version") ||
+    issues.includes("invalid_version_number") ||
+    (!state.hasVersionTable && project.data_schema_version > 0)
+  ) {
+    status = "inconsistent";
+  } else if (issues.length > 0) {
+    status = "drift_detected";
+  }
+
+  const pendingVersions = status === "inconsistent"
+    ? []
+    : pendingProjectSchemaVersions(state.authoritativeVersion).map((migration) => migration.version);
+
+  return {
+    projectId,
+    status,
+    authoritativeVersion: state.authoritativeVersion,
+    cachedVersion: project.data_schema_version,
+    latestKnownVersion: latestKnownProjectSchemaVersion,
+    appliedVersions: state.appliedVersions,
+    pendingVersions,
+    issues,
+  };
+}
+
+/**
+ * Applies pending schema migrations to the project's D1 database.
+ * The project database's own `mb_schema_versions` is the authoritative source of truth.
+ * Control DB `projects.data_schema_version` is updated as a cache after migrations succeed.
+ */
 export async function applyProjectSchema(
   env: MiniBaseEnv,
   projectId: string,
   actorKeyId: string,
-): Promise<{ previousVersion: number; version: number; applied: number[] }> {
+  correlationId?: string,
+): Promise<SchemaApplyResult> {
   const project = await env.CONTROL_DB.prepare(
-    "SELECT d1_database_id, data_schema_version FROM projects WHERE id = ? AND status = 'active'",
-  ).bind(projectId).first<{ d1_database_id: string; data_schema_version: number }>();
+    "SELECT id, slug, d1_database_id, data_schema_version FROM projects WHERE id = ? AND status = 'active'",
+  ).bind(projectId).first<{ id: string; slug: string; d1_database_id: string; data_schema_version: number }>();
   if (!project?.d1_database_id) throw new Error("project_not_found");
-  const pending = pendingProjectSchemaVersions(project.data_schema_version);
+
+  const state = await inspectProjectSchema(env, project.d1_database_id);
+
+  if (
+    state.issues.includes("missing_version_gap") ||
+    state.issues.includes("unknown_future_version") ||
+    state.issues.includes("invalid_version_number") ||
+    (!state.hasVersionTable && project.data_schema_version > 0)
+  ) {
+    throw new Error("inconsistent_schema_state");
+  }
+
+  const previousVersion = state.authoritativeVersion;
+  const pending = pendingProjectSchemaVersions(previousVersion);
+
+  if (pending.length === 0) {
+    // Project database is already at the latest schema version.
+    // If the control DB cached version drifted, sync it to match authoritative state.
+    if (project.data_schema_version !== previousVersion) {
+      await env.CONTROL_DB.prepare(
+        "UPDATE projects SET data_schema_version = ?, updated_at = ? WHERE id = ?",
+      ).bind(previousVersion, new Date().toISOString(), projectId).run();
+    }
+    return {
+      previousVersion,
+      version: previousVersion,
+      applied: [],
+    };
+  }
+
   for (const migration of pending) {
     for (const sql of migration.statements) {
       await queryProjectD1(env, project.d1_database_id, sql, []);
     }
     await env.CONTROL_DB.prepare(
-      "UPDATE projects SET data_schema_version = ?, updated_at = ? WHERE id = ? AND data_schema_version < ?",
-    ).bind(migration.version, new Date().toISOString(), projectId, migration.version).run();
+      "UPDATE projects SET data_schema_version = ?, updated_at = ? WHERE id = ?",
+    ).bind(migration.version, new Date().toISOString(), projectId).run();
   }
-  const version = pending.at(-1)?.version ?? project.data_schema_version;
+
+  const finalVersion = pending.at(-1)?.version ?? previousVersion;
+  const applied = pending.map((migration) => migration.version);
+
   await env.CONTROL_DB.prepare(
     `INSERT INTO audit_events
-      (id, project_id, action, created_at, actor_key_id, outcome, metadata)
-     VALUES (?, ?, 'project.schema_applied', ?, ?, 'success', ?)`,
+      (id, project_id, action, created_at, actor_key_id, outcome, metadata, entity, entity_id, correlation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
-    crypto.randomUUID(), projectId, new Date().toISOString(), actorKeyId,
-    JSON.stringify({ previousVersion: project.data_schema_version, version }),
+    crypto.randomUUID(),
+    projectId,
+    "project.schema_applied",
+    new Date().toISOString(),
+    actorKeyId,
+    "success",
+    JSON.stringify({ previousVersion, version: finalVersion, applied }),
+    "project",
+    projectId,
+    correlationId ?? null,
   ).run();
+
   return {
-    previousVersion: project.data_schema_version,
-    version,
-    applied: pending.map((migration) => migration.version),
+    previousVersion,
+    version: finalVersion,
+    applied,
   };
 }

@@ -25,7 +25,7 @@ import {
   revokeManagementKey,
 } from "./management-keys";
 import { provisionProject } from "./provision";
-import { applyProjectSchema } from "./project-schema";
+import { applyProjectSchema, verifyProjectSchema } from "./project-schema";
 import { parseOrigins, replaceProjectOrigins } from "./project-origins";
 import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
 import { hardenResponse, resolveRequestId } from "./response-security";
@@ -120,12 +120,20 @@ const application = {
         return errorResponse(error);
       }
     }
-    const schemaMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/schema\/apply$/);
-    if (request.method === "POST" && schemaMatch) {
+    const schemaMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/schema(?:\/(apply|verify))?$/);
+    if (schemaMatch) {
       const actor = await authenticateManagementKey(env, request, "projects:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
+      const projectId = schemaMatch[1];
+      const action = schemaMatch[2] ?? "verify";
       try {
-        return json(await applyProjectSchema(env, schemaMatch[1], actor.keyId));
+        if (request.method === "POST" && action === "apply") {
+          return json(await applyProjectSchema(env, projectId, actor.keyId, correlationId));
+        }
+        if (request.method === "GET" && (action === "verify" || !schemaMatch[2])) {
+          return json(await verifyProjectSchema(env, projectId));
+        }
+        return errorResponse(new Error("not_found"));
       } catch (error) {
         return errorResponse(error);
       }

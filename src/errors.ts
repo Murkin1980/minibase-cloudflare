@@ -11,6 +11,7 @@ const statusByCode: Record<string, number> = {
   request_body_too_large: 413,
   file_too_large: 413,
   idempotency_key_reused_with_different_request: 409,
+  inconsistent_schema_state: 409,
   cloudflare_api_error: 502,
   rate_limited: 429,
 };

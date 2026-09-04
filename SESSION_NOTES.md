@@ -1,5 +1,81 @@
 # MiniBase session notes
 
+## 2026-09-04 — Iteration 36: MiniBase vNext CP-02 schema version authority
+
+Decision for MPE data platform: **EXTEND_EXISTING**. Work strictly within the
+existing MiniBase codebase, architecture, and single Worker / single control D1 /
+per-project D1 setup.
+
+### Objective and Problem
+
+Previously, the project schema version had two potential sources of truth:
+- `projects.data_schema_version` in the control D1;
+- `mb_schema_versions` inside each project's D1 database.
+
+`applyProjectSchema` planned migrations based on `projects.data_schema_version`
+in the control D1, which could lead to silent drift and divergence if a migration
+was interrupted or if control metadata was stale or out of sync.
+
+### Implemented in CP-02
+
+1. **Single Authoritative Source of Truth**:
+   - `mb_schema_versions` in each project database is now the authoritative
+     single source of truth for the actually applied schema version.
+   - `projects.data_schema_version` in the control D1 is explicitly defined as a
+     cache / last-observed version, updated when migrations are applied or synchronized.
+
+2. **Project Schema Inspection and Verification**:
+   - `inspectProjectSchema`: Directly queries `sqlite_master` and `mb_schema_versions`
+     in the project's D1 database, checking for missing tables, gaps in applied versions,
+     and unknown future versions.
+   - `verifyProjectSchema` / `GET /v1/projects/{projectId}/schema/verify` (and `GET /schema`):
+     Compares the project database's authoritative version against the control D1 cache,
+     returning structured status (`ok`, `drift_detected`, `inconsistent`), applied versions,
+     pending versions, and issue codes (`control_version_mismatch`, `missing_schema_versions_table`,
+     `missing_version_gap`, `unknown_future_version`).
+
+3. **Fail-Safe Schema Application**:
+   - `applyProjectSchema` / `POST /v1/projects/{projectId}/schema/apply`:
+     - Inspects authoritative schema state from the project DB.
+     - Refuses to apply schema on inconsistent states (version gaps, unknown future versions,
+       or missing version table when control DB version > 0) with HTTP 409 `inconsistent_schema_state`.
+     - Genuinely new/unmigrated projects (missing version table with control DB version = 0)
+       are safely bootstrapped to latest version.
+     - Plans pending migrations using the authoritative project DB version.
+     - Fully idempotent: repeated execution on up-to-date projects is safe and returns
+       `{ previousVersion, version, applied: [] }`.
+     - Synchronizes the control D1 cache after each migration and on no-op sync runs.
+     - Preserves migration ordering and non-destructive forward-only semantics.
+     - Audits `project.schema_applied` events with `entity = 'project'`, `entity_id = projectId`,
+       and request `correlation_id`.
+
+4. **Testing and Verification**:
+   - Added unit and lifecycle tests in `src/project-schema.test.ts` for clean projects, older
+     projects, missing version tables, version gaps, unknown future versions, repeated schema apply,
+     control DB behind/ahead drift synchronization, and fail-safe rejection.
+   - Added HTTP contract tests in `src/api-contract.test.ts` for management schema verification,
+     shorthand route, apply flow, repeated apply idempotency, drift detection, inconsistent state
+     rejection (409), and management authorization enforcement (401).
+
+5. **Documentation**:
+   - Updated `docs/MIGRATIONS.md`, `docs/DATA_MODEL.md`, `docs/DATA_API.md`,
+     `docs/SCALABILITY.md`, `ROADMAP.md`, and `SESSION_NOTES.md`.
+
+### Deliberately not done
+
+- No project schema v5 introduced (remains v1..v4; schema v5 with file checksums/entity links deferred to CP-06).
+- No new migration engine created.
+- No destructive statements or schema rollback scripts.
+- No modification of production resources, secrets, or remote databases.
+- No deploy to Cloudflare (deployment remains a separate owner-approved action).
+
+### Verification
+
+`npm run check` passed: lint, typecheck, 128 vitest tests across 25 files, D1
+integration, migration contract, release readiness, worker integration against
+the bundle, and the production dry-run build.
+Deep change detected: **NO**.
+
 ## 2026-09-03 — Iteration 35: MiniBase vNext CP-01 foundation hardening
 
 Decision for the MPE data-platform upgrade: **EXTEND_EXISTING**. No new

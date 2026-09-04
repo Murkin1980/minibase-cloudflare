@@ -260,6 +260,188 @@ describe("control-plane cost per request", () => {
   });
 });
 
+describe("project schema API contract", () => {
+  it("verifies and applies schema through management endpoints", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    harness = createHarness({
+      projects: [{
+        projectId,
+        databaseId: "db-mgmt",
+        slug: "mgmt-project",
+        dataSchemaVersion: 2,
+        schemaVersions: [1, 2],
+      }],
+      managementKeys: [{ key: "mb_management_admin", scopes: ["projects:write"] }],
+    });
+    const mgmtAuth = { authorization: "Bearer mb_management_admin" };
+
+    // Verify endpoint reports authoritative state and drift/pending
+    const verifyResp = await harness.request(`/v1/projects/${projectId}/schema/verify`, { headers: mgmtAuth });
+    expect(verifyResp.status).toBe(200);
+    const verifyBody = await verifyResp.json() as Record<string, unknown>;
+    expect(verifyBody).toEqual({
+      projectId,
+      status: "ok",
+      authoritativeVersion: 2,
+      cachedVersion: 2,
+      latestKnownVersion: 4,
+      appliedVersions: [1, 2],
+      pendingVersions: [3, 4],
+      issues: [],
+    });
+
+    // GET /schema shorthand also works
+    const schemaResp = await harness.request(`/v1/projects/${projectId}/schema`, { headers: mgmtAuth });
+    expect(schemaResp.status).toBe(200);
+    expect(await schemaResp.json()).toEqual(verifyBody);
+
+    // Apply pending migrations
+    const applyResp = await harness.request(`/v1/projects/${projectId}/schema/apply`, {
+      method: "POST",
+      headers: mgmtAuth,
+    });
+    expect(applyResp.status).toBe(200);
+    expect(await applyResp.json()).toEqual({
+      previousVersion: 2,
+      version: 4,
+      applied: [3, 4],
+    });
+
+    // Repeated apply is safe and idempotent
+    const reapplyResp = await harness.request(`/v1/projects/${projectId}/schema/apply`, {
+      method: "POST",
+      headers: mgmtAuth,
+    });
+    expect(reapplyResp.status).toBe(200);
+    expect(await reapplyResp.json()).toEqual({
+      previousVersion: 4,
+      version: 4,
+      applied: [],
+    });
+
+    // Post-apply verification shows clean latest state
+    const verifiedAfter = await harness.request(`/v1/projects/${projectId}/schema/verify`, { headers: mgmtAuth });
+    expect(verifiedAfter.status).toBe(200);
+    expect(await verifiedAfter.json()).toEqual({
+      projectId,
+      status: "ok",
+      authoritativeVersion: 4,
+      cachedVersion: 4,
+      latestKnownVersion: 4,
+      appliedVersions: [1, 2, 3, 4],
+      pendingVersions: [],
+      issues: [],
+    });
+  });
+
+  it("detects drift and refuses inconsistent schema state", async () => {
+    const driftId = "22222222-2222-4222-8222-222222222222";
+    const inconsistentId = "33333333-3333-4333-8333-333333333333";
+    const missingTableActiveId = "55555555-5555-4555-8555-555555555555";
+    const newProjectId = "66666666-6666-4666-8666-666666666666";
+    harness = createHarness({
+      projects: [{
+        projectId: driftId,
+        databaseId: "db-drift",
+        slug: "drift-project",
+        dataSchemaVersion: 1, // Control DB behind
+        schemaVersions: [1, 2, 3, 4], // Project DB has all
+      }, {
+        projectId: inconsistentId,
+        databaseId: "db-inconsistent",
+        slug: "inconsistent-project",
+        dataSchemaVersion: 3,
+        schemaVersions: [1, 3], // Gap in project DB
+      }, {
+        projectId: missingTableActiveId,
+        databaseId: "db-missing-active",
+        slug: "missing-active-project",
+        dataSchemaVersion: 3, // Control DB says version 3
+        schemaVersions: [],
+        hasSchemaVersionsTable: false, // But table is missing
+      }, {
+        projectId: newProjectId,
+        databaseId: "db-new-project",
+        slug: "new-project",
+        dataSchemaVersion: 0, // Control DB says version 0
+        schemaVersions: [],
+        hasSchemaVersionsTable: false, // Clean new project
+      }],
+      managementKeys: [{ key: "mb_management_admin", scopes: ["projects:write"] }],
+    });
+    const mgmtAuth = { authorization: "Bearer mb_management_admin" };
+
+    // Drift detected
+    const driftResp = await harness.request(`/v1/projects/${driftId}/schema/verify`, { headers: mgmtAuth });
+    expect(driftResp.status).toBe(200);
+    const driftBody = await driftResp.json() as Record<string, unknown>;
+    expect(driftBody.status).toBe("drift_detected");
+    expect(driftBody.issues).toContain("control_version_mismatch");
+
+    // Inconsistent state refuses apply with 409
+    const incResp = await harness.request(`/v1/projects/${inconsistentId}/schema/apply`, {
+      method: "POST",
+      headers: mgmtAuth,
+    });
+    expect(incResp.status).toBe(409);
+    expect(await incResp.json()).toEqual({ error: { code: "inconsistent_schema_state" } });
+
+    // Missing version table on active project (>0) reports inconsistent and blocks apply
+    const missingVerify = await harness.request(`/v1/projects/${missingTableActiveId}/schema/verify`, { headers: mgmtAuth });
+    expect(missingVerify.status).toBe(200);
+    const missingVerifyBody = await missingVerify.json() as Record<string, unknown>;
+    expect(missingVerifyBody.status).toBe("inconsistent");
+    expect(missingVerifyBody.issues).toContain("missing_schema_versions_table");
+    expect(missingVerifyBody.pendingVersions).toEqual([]);
+
+    const missingApply = await harness.request(`/v1/projects/${missingTableActiveId}/schema/apply`, {
+      method: "POST",
+      headers: mgmtAuth,
+    });
+    expect(missingApply.status).toBe(409);
+    expect(await missingApply.json()).toEqual({ error: { code: "inconsistent_schema_state" } });
+
+    // Missing version table on genuinely new project (=0) reports ok with pending versions and allows bootstrap
+    const newVerify = await harness.request(`/v1/projects/${newProjectId}/schema/verify`, { headers: mgmtAuth });
+    expect(newVerify.status).toBe(200);
+    const newVerifyBody = await newVerify.json() as Record<string, unknown>;
+    expect(newVerifyBody.status).toBe("ok");
+    expect(newVerifyBody.pendingVersions).toEqual([1, 2, 3, 4]);
+
+    const newApply = await harness.request(`/v1/projects/${newProjectId}/schema/apply`, {
+      method: "POST",
+      headers: mgmtAuth,
+    });
+    expect(newApply.status).toBe(200);
+    expect(await newApply.json()).toEqual({
+      previousVersion: 0,
+      version: 4,
+      applied: [1, 2, 3, 4],
+    });
+  });
+
+  it("blocks unauthorized callers from schema endpoints", async () => {
+    const authId = "44444444-4444-4444-8444-444444444444";
+    harness = createHarness({
+      projects: [{
+        projectId: authId,
+        databaseId: "db-auth",
+        slug: "auth-project",
+      }],
+      managementKeys: [{ key: "mb_management_read_only", scopes: ["audit:read"] }],
+    });
+    // No auth
+    const noAuth = await harness.request(`/v1/projects/${authId}/schema/verify`);
+    expect(noAuth.status).toBe(401);
+
+    // Wrong scope (audit:read instead of projects:write)
+    const wrongScope = await harness.request(`/v1/projects/${authId}/schema/verify`, {
+      headers: { authorization: "Bearer mb_management_read_only" },
+    });
+    expect(wrongScope.status).toBe(401);
+  });
+});
+
 describe("existing consumer compatibility", () => {
   it("keeps the Records API response shape a superset of the previous one", async () => {
     harness = singleProject();
