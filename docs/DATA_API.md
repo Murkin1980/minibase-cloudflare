@@ -76,9 +76,15 @@ keys until MiniBase has end-user authentication and row-level authorization.
 
 ## Project schema
 
-`POST /v1/projects/{projectId}/schema/apply` applies only missing, ordered,
-idempotent project-schema versions. It requires management scope
-`projects:write`. Current schema version is also tracked in the control D1.
+- `GET /v1/projects/{projectId}/schema/verify` (or `GET /v1/projects/{projectId}/schema`)
+  inspects the project's authoritative `mb_schema_versions` table, compares it
+  against the control D1 cache, detects drift, and lists pending versions.
+- `POST /v1/projects/{projectId}/schema/apply` applies only missing, ordered,
+  idempotent project-schema versions based on the project database's authoritative
+  state, and synchronizes the control D1 cache.
+
+These operations require a management key with `projects:write`. Inconsistent
+migration states fail safe with HTTP 409 (`inconsistent_schema_state`).
 
 ## Files
 

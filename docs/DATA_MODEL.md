@@ -100,8 +100,12 @@ for CP-06 and need a project schema v5.
 
 ### Version bookkeeping
 
-The applied version is recorded in **two** places: `projects.data_schema_version`
-in the control D1 (what the control plane plans from) and `mb_schema_versions` in
-the project database (what the project actually has). CP-02 makes the project's
-own table authoritative and adds a verification step, because the two can
-currently diverge if a migration is interrupted.
+The applied schema version is authoritatively recorded in `mb_schema_versions
+(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)` in the project's own
+D1 database.
+
+The control plane's `projects.data_schema_version` stores a cached /
+last-observed version value. Planning and migration execution query the project's
+`mb_schema_versions` directly, and `GET /v1/projects/{projectId}/schema/verify`
+reports any mismatch or drift. When migrations are applied or synchronized, the
+control-plane cache is updated to match the project's authoritative state.

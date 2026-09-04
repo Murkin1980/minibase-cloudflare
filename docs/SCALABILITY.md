@@ -86,7 +86,7 @@ data request consume one control-plane write row, shared by all projects.
 | Area | Current | Problem / risk | Needed for future | Priority |
 | --- | --- | --- | --- | --- |
 | **A. Multi-project isolation** | One D1 per project; DB UUID resolved from key hash only; R2 prefix `{projectId}/` | Isolation was correct but **untested end-to-end**; a regression in routing would be silent | Regression tests proving A cannot read/write/list B's records or objects | **P0 — done in CP-01** |
-| **B. Schema management** | Control: numbered SQL + Wrangler `d1_migrations`. Project: in-code v1–v4, `IF NOT EXISTS`, forward-only | Version stored in **two** places (`projects.data_schema_version` and `mb_schema_versions`) that can diverge; each statement is a separate REST call, so a mid-migration failure leaves a partially applied version | Verification step that reads the project's own `mb_schema_versions`; documented forward-only policy | P1 (CP-02) |
+| **B. Schema management** | Control: numbered SQL + Wrangler `d1_migrations`. Project: in-code v1–v4, `IF NOT EXISTS`, forward-only | Project `mb_schema_versions` is authoritative; verification endpoint reports drift; forward-only policy | Single source of truth + verify endpoint + regression tests | **P1 — done in CP-02** |
 | **C. Relational data** | `mb_records` document store. Project schema v4 does use real FKs (`mb_users` → `mb_sessions` etc.) but the data API cannot express them | No FKs, joins, or referential integrity reachable through the API. `customers→projects→orders→tasks→artifacts` is not modelable today | Typed collections with declared FKs, or keep documents and add explicit link records — **decide only when a real project needs it** | P2 (CP-04) |
 | **D. Query API** | `limit` (1–100) + `after` keyset cursor on `id` only | **No filtering, no sorting, no field selection.** Any query other than "by id" or "all in id order" is impossible without a full collection scan. `nextAfter` was returned on short final pages, so consumers could not tell when to stop | Filtering on indexed fields; explicit `order`; `hasMore` | **P0 — `hasMore` done in CP-01**; filtering/sorting P1 (CP-04) |
 | **E. Index strategy** | PK `(collection, id)`; index `(collection, updated_at DESC)` exists | The list query orders by `id`, so **that index is never used**. No index story for JSON fields | Rule: index only measured hot paths; add generated columns for filterable fields when a real query needs them | P1 (CP-04) |
@@ -206,7 +206,7 @@ when a named project needs it.
 | No filter/sort/selection | Indexed filtering + explicit order | P1 | new query contract | medium |
 | Unused secondary index | Index rule tied to measured queries | P1 | schema guidance | low |
 | No atomic multi-write | Commands layer, single-statement atomic inserts | P1 | new endpoint | medium |
-| Dual schema version source | Verification against `mb_schema_versions` | P1 | extend endpoint | low |
+| Dual schema version source | Verification against `mb_schema_versions` | P1 | extend endpoint | low (done in CP-02) |
 | No bulk import | Chunked, resumable import jobs | P2 | new endpoint | medium |
 | No metrics | CF-native dashboards + counts endpoint | P2 | additive | low |
 | No audit retention | Documented retention/rollup | P2 | ops + migration | low |
@@ -221,7 +221,7 @@ when a named project needs it.
 | Checkpoint | Scope | Deep change? |
 | --- | --- | --- |
 | **CP-01 Foundation hardening** | isolation + pagination + limits + idempotency + audit contract + measured file size + backup docs + tests | No — **implemented** |
-| CP-02 Schema & migrations | one version source of truth, verification endpoint, documented forward-only policy | No |
+| **CP-02 Schema & migrations** | one version source of truth, verification endpoint, documented forward-only policy | No — **implemented** |
 | CP-03 Project isolation | per-project quotas and per-route rate periods | No |
 | CP-04 Query + indexes | filtering, explicit ordering, field selection, generated columns for indexed fields | No |
 | CP-05 Commands + transactions + idempotency | server-side commands, atomic multi-record writes, `Idempotency-Key` on every write | No |
@@ -243,7 +243,7 @@ new database engine, backend, repository, or VPS; PostgreSQL or Supabase;
 Durable Objects as a storage model; external queue infrastructure; a full
 identity platform; or any breaking change to the existing API.
 
-**Deep change detected in this session: NO.** Everything in CP-01 is additive or
+**Deep change detected in this session: NO.** Everything in CP-01 and CP-02 is additive or
 a bug fix inside the existing architecture.
 
 The one item on the horizon that *would* be a deep change is removing the D1

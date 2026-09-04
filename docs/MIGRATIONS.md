@@ -42,21 +42,72 @@ version a list of statements. Every statement is idempotent
 (`CREATE TABLE IF NOT EXISTS`, `INSERT OR IGNORE`), so a version that was
 interrupted can be re-run safely.
 
+### Single source of truth
+
+`mb_schema_versions (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`
+inside each project database is the **authoritative source of truth** for the
+applied schema version.
+
+`projects.data_schema_version` in the control D1 is explicitly a **cached /
+last-observed version**, not an independent authority. When migrations are
+planned or applied, MiniBase queries the project database's `mb_schema_versions`
+table directly.
+
+### Verification endpoint
+
+```http
+GET /v1/projects/{projectId}/schema/verify
+Authorization: Bearer mb_management_...
+```
+
+Inspects the project's own database and compares it against the control-plane
+cache. Returns:
+
+```json
+{
+  "projectId": "11111111-1111-4111-8111-111111111111",
+  "status": "ok",
+  "authoritativeVersion": 4,
+  "cachedVersion": 4,
+  "latestKnownVersion": 4,
+  "appliedVersions": [1, 2, 3, 4],
+  "pendingVersions": [],
+  "issues": []
+}
+```
+
+Status outcomes:
+- `"ok"`: Project DB versions are contiguous and match control DB cache.
+- `"drift_detected"`: Control DB cache differs from project DB authoritative version, or table was missing while control expected version > 0.
+- `"inconsistent"`: Project DB contains version gaps (e.g. `[1, 3]`) or unknown future versions (e.g. `[1, 2, 3, 4, 5]`).
+
+### Applying schema
+
 ```http
 POST /v1/projects/{projectId}/schema/apply
 Authorization: Bearer mb_management_...
 ```
 
-Applies only versions above the project's current one, in order, and records the
-result in the control-plane audit log. Returns:
+Inspects the authoritative schema state in the project DB, applies only missing
+versions in strict ascending order, updates `mb_schema_versions`, syncs the
+control DB `data_schema_version` cache, and appends an audit event. Returns:
 
 ```json
 { "previousVersion": 1, "version": 4, "applied": [2, 3, 4] }
 ```
 
+If the project is already at the latest schema version, it safely returns
+`{ previousVersion: 4, version: 4, applied: [] }` and synchronizes the control
+cache if it was stale.
+
+If an inconsistent state is detected (e.g., missing version gaps or future
+unknown versions), the endpoint fails safe with HTTP 409
+`{"error": {"code": "inconsistent_schema_state"}}` rather than attempting
+silent resolution or partial execution.
+
 Rules, enforced by `src/project-schema.test.ts`:
 
-- versions are strictly ordered and unique;
+- versions are strictly ordered, contiguous, and unique;
 - only missing versions are planned, and planning is idempotent at the current
   version;
 - no version contains `DROP` or `TRUNCATE`.
@@ -69,21 +120,13 @@ Rules, enforced by `src/project-schema.test.ts`:
    existing tenant must keep working before it runs `schema/apply`.
 4. Update `src/project-schema.test.ts` expectations.
 5. Run `npm run check`.
-6. Apply per project through the endpoint, and verify.
+6. Apply per project through the endpoint, and verify with `/schema/verify`.
 
 Provisioning applies every version to a brand-new database automatically
 (`provision.ts` flattens `projectSchemaMigrations`), so a new project is always
 at the latest version while an existing one stays where it was until `schema/apply`
 runs. **This asymmetry is intentional** and is the reason a new column must never
 be required by the Worker before every live project has been migrated.
-
-### Version bookkeeping
-
-`projects.data_schema_version` (control D1) drives planning. `mb_schema_versions`
-(project D1) records what the project actually has. CP-02 makes the project's own
-table authoritative and adds a verification step, because the two can currently
-diverge if a migration is interrupted between the last statement and the control
-update.
 
 ## Supabase migration packages
 

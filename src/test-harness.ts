@@ -20,8 +20,12 @@ export interface HarnessProject {
   projectId: string;
   databaseId: string;
   slug: string;
+  name?: string;
   origins?: string[];
   status?: string;
+  dataSchemaVersion?: number;
+  schemaVersions?: number[];
+  hasSchemaVersionsTable?: boolean;
 }
 
 export interface HarnessDataKey {
@@ -71,6 +75,21 @@ export interface D1Call {
   params: unknown[];
 }
 
+export interface HarnessProjectRow {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  d1_database_id: string;
+  data_schema_version: number;
+  origins: string[];
+}
+
+export interface HarnessSchemaState {
+  hasTable: boolean;
+  versions: number[];
+}
+
 export interface Harness {
   env: MiniBaseEnv;
   audit: AuditRow[];
@@ -78,6 +97,10 @@ export interface Harness {
   records: Map<string, Map<string, Map<string, RecordRow>>>;
   /** database id -> path -> metadata */
   files: Map<string, Map<string, FileMeta>>;
+  /** database id -> schema state */
+  schemaStore: Map<string, HarnessSchemaState>;
+  /** project id -> project row */
+  projectRows: Map<string, HarnessProjectRow>;
   r2Keys: string[];
   d1Calls: D1Call[];
   controlSql: string[];
@@ -93,6 +116,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const projects = options.projects ?? [];
   const records = new Map<string, Map<string, Map<string, RecordRow>>>();
   const files = new Map<string, Map<string, FileMeta>>();
+  const schemaStore = new Map<string, HarnessSchemaState>();
+  const projectRows = new Map<string, HarnessProjectRow>();
   const r2Bodies = new Map<string, string>();
   const r2Keys: string[] = [];
   const audit: AuditRow[] = [];
@@ -102,6 +127,19 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   for (const project of projects) {
     records.set(project.databaseId, new Map());
     files.set(project.databaseId, new Map());
+    projectRows.set(project.projectId, {
+      id: project.projectId,
+      slug: project.slug,
+      name: project.name ?? project.slug,
+      status: project.status ?? "active",
+      d1_database_id: project.databaseId,
+      data_schema_version: project.dataSchemaVersion ?? 4,
+      origins: project.origins ?? [],
+    });
+    schemaStore.set(project.databaseId, {
+      hasTable: project.hasSchemaVersionsTable !== false,
+      versions: project.schemaVersions ? [...project.schemaVersions] : [1, 2, 3, 4],
+    });
   }
 
   const dataKeyRows = new Map<string, {
@@ -164,8 +202,20 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         }
         if (sql.includes("FROM management_keys")) return managementKeyRows.get(String(values[0])) ?? null;
         if (sql.includes("FROM project_origins")) {
-          const project = projects.find((candidate) => candidate.projectId === values[0]);
+          const project = projectRows.get(String(values[0]));
           return project?.origins?.includes(String(values[1])) ? { allowed: 1 } : null;
+        }
+        if (sql.includes("FROM projects WHERE id =")) {
+          const row = projectRows.get(String(values[0]));
+          if (!row) return null;
+          if (sql.includes("status = 'active'") && row.status !== "active") return null;
+          return {
+            id: row.id,
+            slug: row.slug,
+            d1_database_id: row.d1_database_id,
+            data_schema_version: row.data_schema_version,
+            status: row.status,
+          };
         }
         return null;
       },
@@ -184,10 +234,16 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         await ready;
         if (sql.includes("INSERT INTO audit_events")) audit.push({ sql, values });
         if (sql.includes("UPDATE api_keys SET last_used_at")) {
-          // Mirror the write so a second request observes a fresh timestamp and
-          // the activity throttle can actually be exercised.
           for (const row of dataKeyRows.values()) {
             if (row.id === values[1]) row.last_used_at = String(values[0]);
+          }
+        }
+        if (sql.includes("UPDATE projects SET data_schema_version =")) {
+          const nextVersion = Number(values[0]);
+          const projectId = String(values[2]);
+          const row = projectRows.get(projectId);
+          if (row) {
+            row.data_schema_version = nextVersion;
           }
         }
         return { success: true, results: [] };
@@ -210,10 +266,44 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   function executeProjectSql(databaseId: string, sql: string, params: unknown[]) {
     const store = records.get(databaseId);
     const fileStore = files.get(databaseId);
+    const schema = schemaStore.get(databaseId);
     if (!store || !fileStore) return null;
     d1Calls.push({ databaseId, sql, params });
     const flat = sql.replace(/\s+/g, " ");
 
+    if (flat.includes("FROM sqlite_master WHERE type = 'table' AND name = 'mb_schema_versions'")) {
+      return {
+        results: schema?.hasTable ? [{ name: "mb_schema_versions" }] : [],
+        success: true,
+      };
+    }
+    if (flat.includes("FROM mb_schema_versions ORDER BY version ASC")) {
+      if (!schema?.hasTable) {
+        return null;
+      }
+      return {
+        results: (schema.versions ?? []).map((version) => ({ version, applied_at: NOW })),
+        success: true,
+      };
+    }
+    if (flat.includes("CREATE TABLE IF NOT EXISTS mb_schema_versions")) {
+      if (schema) schema.hasTable = true;
+      return { results: [], success: true };
+    }
+    if (flat.includes("INSERT OR IGNORE INTO mb_schema_versions")) {
+      if (schema) {
+        const match = /VALUES\s*\(\s*(\d+)/i.exec(flat);
+        const version = match ? Number(match[1]) : (typeof params[0] === "number" ? params[0] : null);
+        if (version !== null && !schema.versions.includes(version)) {
+          schema.versions.push(version);
+          schema.versions.sort((a, b) => a - b);
+        }
+      }
+      return { results: [], success: true };
+    }
+    if (flat.startsWith("CREATE TABLE IF NOT EXISTS") || flat.startsWith("CREATE INDEX IF NOT EXISTS")) {
+      return { results: [], success: true };
+    }
     if (flat.includes("DELETE FROM mb_records")) {
       const [collection, id] = params as [string, string];
       store.get(collection)?.delete(id);
@@ -337,6 +427,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     audit,
     records,
     files,
+    schemaStore,
+    projectRows,
     r2Keys,
     d1Calls,
     controlSql,
