@@ -37,8 +37,10 @@ was interrupted or if control metadata was stale or out of sync.
 3. **Fail-Safe Schema Application**:
    - `applyProjectSchema` / `POST /v1/projects/{projectId}/schema/apply`:
      - Inspects authoritative schema state from the project DB.
-     - Refuses to apply schema on inconsistent states (version gaps or unknown future versions)
-       with HTTP 409 `inconsistent_schema_state`.
+     - Refuses to apply schema on inconsistent states (version gaps, unknown future versions,
+       or missing version table when control DB version > 0) with HTTP 409 `inconsistent_schema_state`.
+     - Genuinely new/unmigrated projects (missing version table with control DB version = 0)
+       are safely bootstrapped to latest version.
      - Plans pending migrations using the authoritative project DB version.
      - Fully idempotent: repeated execution on up-to-date projects is safe and returns
        `{ previousVersion, version, applied: [] }`.

@@ -77,9 +77,9 @@ cache. Returns:
 ```
 
 Status outcomes:
-- `"ok"`: Project DB versions are contiguous and match control DB cache.
-- `"drift_detected"`: Control DB cache differs from project DB authoritative version, or table was missing while control expected version > 0.
-- `"inconsistent"`: Project DB contains version gaps (e.g. `[1, 3]`) or unknown future versions (e.g. `[1, 2, 3, 4, 5]`).
+- `"ok"`: Project DB versions are contiguous and match control DB cache, or a genuinely unmigrated project (no table, control version = 0).
+- `"drift_detected"`: Control DB cache differs from project DB authoritative version (when project DB has a valid version table).
+- `"inconsistent"`: Project DB contains version gaps (e.g. `[1, 3]`), unknown future versions (e.g. `[1, 2, 3, 4, 5]`), or missing version table when control DB expected version > 0.
 
 ### Applying schema
 

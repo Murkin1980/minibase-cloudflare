@@ -337,6 +337,8 @@ describe("project schema API contract", () => {
   it("detects drift and refuses inconsistent schema state", async () => {
     const driftId = "22222222-2222-4222-8222-222222222222";
     const inconsistentId = "33333333-3333-4333-8333-333333333333";
+    const missingTableActiveId = "55555555-5555-4555-8555-555555555555";
+    const newProjectId = "66666666-6666-4666-8666-666666666666";
     harness = createHarness({
       projects: [{
         projectId: driftId,
@@ -350,6 +352,20 @@ describe("project schema API contract", () => {
         slug: "inconsistent-project",
         dataSchemaVersion: 3,
         schemaVersions: [1, 3], // Gap in project DB
+      }, {
+        projectId: missingTableActiveId,
+        databaseId: "db-missing-active",
+        slug: "missing-active-project",
+        dataSchemaVersion: 3, // Control DB says version 3
+        schemaVersions: [],
+        hasSchemaVersionsTable: false, // But table is missing
+      }, {
+        projectId: newProjectId,
+        databaseId: "db-new-project",
+        slug: "new-project",
+        dataSchemaVersion: 0, // Control DB says version 0
+        schemaVersions: [],
+        hasSchemaVersionsTable: false, // Clean new project
       }],
       managementKeys: [{ key: "mb_management_admin", scopes: ["projects:write"] }],
     });
@@ -369,6 +385,39 @@ describe("project schema API contract", () => {
     });
     expect(incResp.status).toBe(409);
     expect(await incResp.json()).toEqual({ error: { code: "inconsistent_schema_state" } });
+
+    // Missing version table on active project (>0) reports inconsistent and blocks apply
+    const missingVerify = await harness.request(`/v1/projects/${missingTableActiveId}/schema/verify`, { headers: mgmtAuth });
+    expect(missingVerify.status).toBe(200);
+    const missingVerifyBody = await missingVerify.json() as Record<string, unknown>;
+    expect(missingVerifyBody.status).toBe("inconsistent");
+    expect(missingVerifyBody.issues).toContain("missing_schema_versions_table");
+    expect(missingVerifyBody.pendingVersions).toEqual([]);
+
+    const missingApply = await harness.request(`/v1/projects/${missingTableActiveId}/schema/apply`, {
+      method: "POST",
+      headers: mgmtAuth,
+    });
+    expect(missingApply.status).toBe(409);
+    expect(await missingApply.json()).toEqual({ error: { code: "inconsistent_schema_state" } });
+
+    // Missing version table on genuinely new project (=0) reports ok with pending versions and allows bootstrap
+    const newVerify = await harness.request(`/v1/projects/${newProjectId}/schema/verify`, { headers: mgmtAuth });
+    expect(newVerify.status).toBe(200);
+    const newVerifyBody = await newVerify.json() as Record<string, unknown>;
+    expect(newVerifyBody.status).toBe("ok");
+    expect(newVerifyBody.pendingVersions).toEqual([1, 2, 3, 4]);
+
+    const newApply = await harness.request(`/v1/projects/${newProjectId}/schema/apply`, {
+      method: "POST",
+      headers: mgmtAuth,
+    });
+    expect(newApply.status).toBe(200);
+    expect(await newApply.json()).toEqual({
+      previousVersion: 0,
+      version: 4,
+      applied: [1, 2, 3, 4],
+    });
   });
 
   it("blocks unauthorized callers from schema endpoints", async () => {

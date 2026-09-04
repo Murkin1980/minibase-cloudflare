@@ -237,12 +237,12 @@ describe("project schema verification (mismatch detection)", () => {
       }],
     });
     const verification = await verifyProjectSchema(harness.env, "proj-missing-tbl");
-    expect(verification.status).toBe("drift_detected");
+    expect(verification.status).toBe("inconsistent");
     expect(verification.authoritativeVersion).toBe(0);
     expect(verification.cachedVersion).toBe(3);
     expect(verification.issues).toContain("missing_schema_versions_table");
     expect(verification.issues).toContain("control_version_mismatch");
-    expect(verification.pendingVersions).toEqual([1, 2, 3, 4]);
+    expect(verification.pendingVersions).toEqual([]);
   });
 
   it("marks state inconsistent when gaps exist in project DB", async () => {
@@ -384,7 +384,7 @@ describe("project schema application", () => {
     expect(harness.projectRows.get("proj-ahead")?.data_schema_version).toBe(4);
   });
 
-  it("applies all migrations to an unmigrated clean project without schema table", async () => {
+  it("applies all migrations to an unmigrated clean project without schema table (cached version 0)", async () => {
     harness = createHarness({
       projects: [{
         projectId: "proj-clean",
@@ -400,6 +400,23 @@ describe("project schema application", () => {
     expect(harness.schemaStore.get("db-clean")?.versions).toEqual([1, 2, 3, 4]);
     expect(harness.schemaStore.get("db-clean")?.hasTable).toBe(true);
     expect(harness.projectRows.get("proj-clean")?.data_schema_version).toBe(4);
+  });
+
+  it("refuses to apply schema when version table is missing but control DB version > 0 (fail-safe)", async () => {
+    harness = createHarness({
+      projects: [{
+        projectId: "proj-missing-tbl-ctrl-active",
+        databaseId: "db-missing-tbl-ctrl-active",
+        slug: "missing-tbl-active-project",
+        dataSchemaVersion: 3,
+        schemaVersions: [],
+        hasSchemaVersionsTable: false,
+      }],
+    });
+    await expect(applyProjectSchema(harness.env, "proj-missing-tbl-ctrl-active", "mgmt-key-1"))
+      .rejects.toThrow("inconsistent_schema_state");
+    expect(harness.projectRows.get("proj-missing-tbl-ctrl-active")?.data_schema_version).toBe(3);
+    expect(harness.d1Calls.filter((c) => c.sql.startsWith("CREATE TABLE"))).toHaveLength(0);
   });
 
   it("refuses to apply schema on inconsistent gap state (fail-safe)", async () => {

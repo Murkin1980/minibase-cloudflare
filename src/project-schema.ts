@@ -238,7 +238,8 @@ export async function verifyProjectSchema(
   if (
     issues.includes("missing_version_gap") ||
     issues.includes("unknown_future_version") ||
-    issues.includes("invalid_version_number")
+    issues.includes("invalid_version_number") ||
+    (!state.hasVersionTable && project.data_schema_version > 0)
   ) {
     status = "inconsistent";
   } else if (issues.length > 0) {
@@ -282,7 +283,8 @@ export async function applyProjectSchema(
   if (
     state.issues.includes("missing_version_gap") ||
     state.issues.includes("unknown_future_version") ||
-    state.issues.includes("invalid_version_number")
+    state.issues.includes("invalid_version_number") ||
+    (!state.hasVersionTable && project.data_schema_version > 0)
   ) {
     throw new Error("inconsistent_schema_state");
   }
