@@ -3,6 +3,41 @@ import type { LimitOverrides } from "./limits";
 import type { QuotaKey } from "./project-quotas";
 import type { RouteClass } from "./abuse-control";
 import { sha256 } from "./security";
+// @ts-expect-error — Node types not installed for test polyfill only
+import { createHash } from "node:crypto";
+
+// Polyfill workerd DigestStream for Node vitest — production file-hash.ts
+// must remain free of Node code so the Worker bundle stays minimal.
+// This polyfill lives only in the test harness and is never bundled for Workers.
+if (typeof globalThis.crypto !== "undefined" && !("DigestStream" in (globalThis.crypto as unknown as Record<string, unknown>))) {
+  class NodeDigestStream extends WritableStream<Uint8Array> {
+    digest: Promise<ArrayBuffer>;
+    private _hash = createHash("sha256");
+    private _resolve!: (v: ArrayBuffer) => void;
+    private _reject!: (e: unknown) => void;
+    constructor(_alg: string) {
+      void _alg;
+      let resolve!: (v: ArrayBuffer) => void;
+      let reject!: (e: unknown) => void;
+      const digestPromise = new Promise<ArrayBuffer>((res, rej) => { resolve = res; reject = rej; });
+      super({
+        write: (chunk: Uint8Array) => { try { (this as unknown as NodeDigestStream)._hash.update(chunk); } catch (e) { reject(e); throw e; } },
+        close: () => {
+          try {
+            const buf = (this as unknown as NodeDigestStream)._hash.digest();
+            const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+            resolve(ab);
+          } catch (e) { reject(e); }
+        },
+        abort: (reason) => { reject(reason instanceof Error ? reason : new Error(String(reason))); },
+      });
+      this.digest = digestPromise;
+      this._resolve = resolve;
+      this._reject = reject;
+    }
+  }
+  (globalThis.crypto as unknown as Record<string, unknown>)["DigestStream"] = NodeDigestStream as unknown as never;
+}
 
 /**
  * Shared test double for the whole MiniBase request path.
@@ -76,6 +111,8 @@ export interface HarnessOptions {
    * the statement. Used to prove a failed transport cannot create a marker.
    */
   failProjectD1Requests?: number;
+  /** CP-06: fail only the next N artifact INSERTs to test orphan handling */
+  failArtifactInsertRequests?: number;
 }
 
 /** One observed rate-limit consultation, with the binding that served it. */
@@ -95,6 +132,23 @@ export interface FileMeta {
   size: number;
   contentType: string;
   etag: string;
+  sha256?: string | null;
+  uploadedAt?: string | null;
+  entityType?: string | null;
+  entityId?: string | null;
+}
+
+export interface ArtifactMeta {
+  artifactId: string;
+  storageKey: string;
+  size: number;
+  contentType: string | null;
+  etag: string;
+  sha256: string;
+  uploadedAt: string;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: string;
 }
 
 /** CP-05 persisted marker, keyed by command type + SHA-256 idempotency key. */
@@ -153,6 +207,7 @@ export interface HarnessSchemaState {
   versions: number[];
   commandTablePresent: boolean;
   commandTriggerPresent: boolean;
+  v7PhysicalApplied?: boolean;
 }
 
 export interface Harness {
@@ -166,6 +221,8 @@ export interface Harness {
   commandMutations: Map<string, Map<string, number>>;
   /** database id -> path -> metadata */
   files: Map<string, Map<string, FileMeta>>;
+  /** database id -> artifactId -> metadata */
+  artifacts: Map<string, Map<string, ArtifactMeta>>;
   /** database id -> schema state */
   schemaStore: Map<string, HarnessSchemaState>;
   /** project id -> project row */
@@ -230,7 +287,7 @@ function selectRecords(
 
   let rows = [...(store.get(collection) ?? new Map<string, RecordRow>()).values()];
   for (const condition of conditions.slice(1)) {
-    const rowValue = /^\((.+), id\) (<|>) \(\?, \?\)$/.exec(condition);
+    const rowValue = /^\(.+ , id\) (<|>) \(\?, \?\)$/.exec(condition) ?? /^\((.+), id\) (<|>) \(\?, \?\)$/.exec(condition);
     if (rowValue) {
       const [sortValue, id] = [values.shift(), String(values.shift())];
       const operator = rowValue[2];
@@ -270,9 +327,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const commands = new Map<string, Map<string, HarnessCommandRow>>();
   const commandMutations = new Map<string, Map<string, number>>();
   const files = new Map<string, Map<string, FileMeta>>();
+  const artifacts = new Map<string, Map<string, ArtifactMeta>>();
   const schemaStore = new Map<string, HarnessSchemaState>();
   const projectRows = new Map<string, HarnessProjectRow>();
   const r2Bodies = new Map<string, string>();
+  const r2Meta = new Map<string, { size: number; etag: string; uploaded: Date; contentType?: string }>();
   const r2Keys: string[] = [];
   const audit: AuditRow[] = [];
   const d1Calls: D1Call[] = [];
@@ -280,19 +339,20 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const rateLimitCalls: HarnessRateLimitCall[] = [];
 
   for (const project of projects) {
-    const schemaVersions = project.schemaVersions ? [...project.schemaVersions] : [1, 2, 3, 4, 5, 6];
+    const schemaVersions = project.schemaVersions ? [...project.schemaVersions] : [1, 2, 3, 4, 5, 6, 7];
     const hasCommandV6 = schemaVersions.includes(6);
     records.set(project.databaseId, new Map());
     commands.set(project.databaseId, new Map());
     commandMutations.set(project.databaseId, new Map());
     files.set(project.databaseId, new Map());
+    artifacts.set(project.databaseId, new Map());
     projectRows.set(project.projectId, {
       id: project.projectId,
       slug: project.slug,
       name: project.name ?? project.slug,
       status: project.status ?? "active",
       d1_database_id: project.databaseId,
-      data_schema_version: project.dataSchemaVersion ?? 6,
+      data_schema_version: project.dataSchemaVersion ?? 7,
       origins: project.origins ?? [],
       ...storedQuotas(project.quotas),
     });
@@ -301,6 +361,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       versions: schemaVersions,
       commandTablePresent: project.commandTablePresent ?? hasCommandV6,
       commandTriggerPresent: project.commandTriggerPresent ?? hasCommandV6,
+      v7PhysicalApplied: schemaVersions.includes(7),
     });
   }
 
@@ -453,15 +514,22 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     return prepared;
   }
 
-  function r2Object(key: string, body: string): R2Object {
+  function r2Object(key: string, body: string, meta?: { size?: number; etag?: string; uploaded?: Date }): R2Object {
+    const size = meta?.size ?? new TextEncoder().encode(body).byteLength;
+    const etag = meta?.etag ?? `etag-${key.length}-${size}`;
     return {
       key,
-      size: new TextEncoder().encode(body).byteLength,
-      etag: `etag-${key.length}`,
-      httpEtag: `"etag-${key.length}"`,
-      uploaded: new Date(),
+      size,
+      etag,
+      httpEtag: `"${etag}"`,
+      uploaded: meta?.uploaded ?? new Date(),
       writeHttpMetadata() {},
-    };
+    } as unknown as R2Object;
+  }
+
+  function isV7(databaseId: string): boolean {
+    const s = schemaStore.get(databaseId);
+    return !!s?.versions.includes(7);
   }
 
   function executeProjectSql(databaseId: string, sql: string, params: unknown[]) {
@@ -469,15 +537,52 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     const commandStore = commands.get(databaseId);
     const mutationStore = commandMutations.get(databaseId);
     const fileStore = files.get(databaseId);
+    const artifactStore = artifacts.get(databaseId);
     const schema = schemaStore.get(databaseId);
-    if (!store || !commandStore || !mutationStore || !fileStore) return null;
+    if (!store || !commandStore || !mutationStore || !fileStore || !artifactStore) return null;
     const flat = sql.replace(/\s+/g, " ");
 
+    // Handle v7 schema probing and migration statements
+    if (flat.includes("ALTER TABLE mb_files ADD COLUMN")) {
+      if (schema) schema.v7PhysicalApplied = true;
+      // Idempotent: if column already exists in v7, real SQLite would error duplicate column name.
+      // Our project-schema now catches duplicate column name; simulate success always.
+      return { results: [], success: true };
+    }
+    if (flat.includes("CREATE TABLE IF NOT EXISTS mb_artifacts")) {
+      if (schema) schema.v7PhysicalApplied = true;
+      return { results: [], success: true };
+    }
+    if (flat.includes("CREATE INDEX IF NOT EXISTS idx_mb_artifacts_storage_key") || flat.includes("CREATE INDEX IF NOT EXISTS idx_mb_artifacts_entity")) {
+      return { results: [], success: true };
+    }
+    if (flat.startsWith("SELECT name FROM sqlite_master") && flat.includes("mb_artifacts")) {
+      // Artifact table existence check for v7 probe
+      return {
+        results: isV7(databaseId) ? [{ name: "mb_artifacts" }] : [],
+        success: true,
+      };
+    }
     if (flat.includes("FROM sqlite_master WHERE type = 'table' AND name = 'mb_schema_versions'")) {
       return {
         results: schema?.hasTable ? [{ name: "mb_schema_versions" }] : [],
         success: true,
       };
+    }
+    // This must not intercept INSERT INTO mb_commands which contains a SELECT subquery on mb_schema_versions.
+    // Only handle top-level SELECT version ... queries (artifact schema probe).
+    if (flat.startsWith("SELECT version FROM mb_schema_versions WHERE version")) {
+      let wanted: number | null = null;
+      if (params.length > 0 && typeof params[0] === "number") wanted = params[0] as number;
+      else if (flat.includes("version = 7")) wanted = 7;
+      else {
+        const m = /version\s*=\s*(\d+)/.exec(flat);
+        if (m) wanted = Number(m[1]);
+      }
+      if (wanted !== null) {
+        const has = schema?.versions.includes(wanted);
+        return { results: has ? [{ version: wanted, applied_at: NOW }] : [], success: true };
+      }
     }
     if (flat.includes("FROM mb_schema_versions ORDER BY version ASC")) {
       if (!schema?.hasTable) {
@@ -625,6 +730,10 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       fileStore.delete(String(params[0]));
       return { results: [], success: true };
     }
+    if (flat.includes("DELETE FROM mb_artifacts")) {
+      artifactStore.delete(String(params[0]));
+      return { results: [], success: true };
+    }
     if (flat.includes("FROM mb_records WHERE collection = ? AND id = ?")) {
       const [collection, id] = params as [string, string];
       const row = store.get(collection)?.get(id);
@@ -643,33 +752,211 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       });
       return { results: [], success: true };
     }
+    // --- Artifact queries ---
+    // Simulate missing table when v7 not applied — but allow physical checks after ALTERs before version row
+    const referencesArtifactTable = flat.includes("mb_artifacts") && !flat.includes("sqlite_master");
+    if (referencesArtifactTable && !isV7(databaseId) && !schemaStore.get(databaseId)?.v7PhysicalApplied) {
+      throw Object.assign(new Error("no such table: mb_artifacts"), { code: "SQLITE_ERROR" });
+    }
+    // V7 verification support: SELECT sql FROM sqlite_master for mb_files/mb_artifacts
+    if (flat.includes("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mb_files'")) {
+      const s = schemaStore.get(databaseId);
+      if (!isV7(databaseId) && !s?.v7PhysicalApplied) return { results: [], success: true };
+      const sql = `CREATE TABLE mb_files (path TEXT PRIMARY KEY, size INTEGER NOT NULL, content_type TEXT, etag TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, checksum_sha256 TEXT CHECK(checksum_sha256 IS NULL OR (length(checksum_sha256) = 64 AND checksum_sha256 NOT GLOB '*[^0-9a-f]*')), uploaded_at TEXT, entity_type TEXT CHECK(entity_type IS NULL OR (length(entity_type) BETWEEN 2 AND 63 AND entity_type GLOB '[a-z]*' AND entity_type NOT GLOB '*[^a-z0-9_-]*' AND substr(entity_type,1,3) != 'mb_')), entity_id TEXT CHECK(entity_id IS NULL OR (length(entity_id) BETWEEN 1 AND 128 AND entity_id GLOB '[A-Za-z0-9]*' AND entity_id NOT GLOB '*[^A-Za-z0-9._:-]*')))`;
+      return { results: [{ sql }], success: true };
+    }
+    if (flat.includes("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mb_artifacts'")) {
+      const s2 = schemaStore.get(databaseId);
+      if (!isV7(databaseId) && !s2?.v7PhysicalApplied) return { results: [], success: true };
+      const sql = `CREATE TABLE mb_artifacts (artifact_id TEXT PRIMARY KEY CHECK(length(artifact_id) BETWEEN 1 AND 64 AND artifact_id GLOB '[A-Za-z0-9]*' AND artifact_id NOT GLOB '*[^A-Za-z0-9._-]*'), storage_key TEXT NOT NULL UNIQUE, size INTEGER NOT NULL CHECK(size >= 0), content_type TEXT, etag TEXT NOT NULL, checksum_sha256 TEXT NOT NULL CHECK(length(checksum_sha256) = 64 AND checksum_sha256 NOT GLOB '*[^0-9a-f]*'), uploaded_at TEXT NOT NULL, entity_type TEXT CHECK(entity_type IS NULL OR (length(entity_type) BETWEEN 2 AND 63 AND entity_type GLOB '[a-z]*' AND entity_type NOT GLOB '*[^a-z0-9_-]*' AND substr(entity_type,1,3) != 'mb_')), entity_id TEXT CHECK(entity_id IS NULL OR (length(entity_id) BETWEEN 1 AND 128 AND entity_id GLOB '[A-Za-z0-9]*' AND entity_id NOT GLOB '*[^A-Za-z0-9._:-]*')), created_at TEXT NOT NULL, CHECK((entity_type IS NULL AND entity_id IS NULL) OR (entity_type IS NOT NULL AND entity_id IS NOT NULL)))`;
+      return { results: [{ sql }], success: true };
+    }
+    if (flat.startsWith("PRAGMA table_info(mb_files)")) {
+      const s3 = schemaStore.get(databaseId);
+      if (!isV7(databaseId) && !s3?.v7PhysicalApplied) {
+        return { results: [
+          { name: "path", type: "TEXT", notnull: 1, pk: 1 },
+          { name: "size", type: "INTEGER", notnull: 1, pk: 0 },
+          { name: "content_type", type: "TEXT", notnull: 0, pk: 0 },
+          { name: "etag", type: "TEXT", notnull: 1, pk: 0 },
+          { name: "created_at", type: "TEXT", notnull: 1, pk: 0 },
+          { name: "updated_at", type: "TEXT", notnull: 1, pk: 0 },
+        ], success: true };
+      }
+      return { results: [
+        { name: "path", type: "TEXT", notnull: 1, pk: 1 },
+        { name: "size", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "content_type", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "etag", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "created_at", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "updated_at", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "checksum_sha256", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "uploaded_at", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "entity_type", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "entity_id", type: "TEXT", notnull: 0, pk: 0 },
+      ], success: true };
+    }
+    if (flat.startsWith("PRAGMA table_info(mb_artifacts)")) {
+      const s4 = schemaStore.get(databaseId);
+      if (!isV7(databaseId) && !s4?.v7PhysicalApplied) return { results: [], success: true };
+      return { results: [
+        { name: "artifact_id", type: "TEXT", notnull: 1, pk: 1 },
+        { name: "storage_key", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "size", type: "INTEGER", notnull: 1, pk: 0 },
+        { name: "content_type", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "etag", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "checksum_sha256", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "uploaded_at", type: "TEXT", notnull: 1, pk: 0 },
+        { name: "entity_type", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "entity_id", type: "TEXT", notnull: 0, pk: 0 },
+        { name: "created_at", type: "TEXT", notnull: 1, pk: 0 },
+      ], success: true };
+    }
+    const referencesNewFileColumns = flat.includes("checksum_sha256") || flat.includes("uploaded_at") || flat.includes("entity_type") || flat.includes("entity_id");
+    // For file queries that reference new columns, if v7 not present, simulate missing column
+    if (referencesNewFileColumns && flat.includes("mb_files") && !isV7(databaseId)) {
+      // Only for queries that select/insert those columns; schema check SELECTs for mb_artifacts already handled above
+      if (flat.includes("INSERT INTO mb_files") && flat.includes("checksum_sha256")) {
+        throw Object.assign(new Error("no such column: checksum_sha256"), { code: "SQLITE_ERROR" });
+      }
+      if (flat.includes("SELECT") && flat.includes("checksum_sha256")) {
+        throw Object.assign(new Error("no such column: checksum_sha256"), { code: "SQLITE_ERROR" });
+      }
+    }
+
+    // File list/select
     if (flat.includes("FROM mb_files WHERE path > ?")) {
       const [after, limit] = params as [string, number];
-      return {
-        results: [...fileStore.entries()]
-          .filter(([path]) => path > after)
-          .sort(([left], [right]) => (left < right ? -1 : 1))
-          .slice(0, limit)
-          .map(([path, meta]) => ({
-            path, size: meta.size, content_type: meta.contentType, etag: meta.etag,
-            created_at: NOW, updated_at: NOW,
-          })),
-        success: true,
-      };
+      const rows = [...fileStore.entries()]
+        .filter(([path]) => path > after)
+        .sort(([left], [right]) => (left < right ? -1 : 1))
+        .slice(0, limit)
+        .map(([path, meta]) => ({
+          path, size: meta.size, content_type: meta.contentType, etag: meta.etag,
+          checksum_sha256: meta.sha256 ?? null,
+          uploaded_at: meta.uploadedAt ?? null,
+          entity_type: meta.entityType ?? null,
+          entity_id: meta.entityId ?? null,
+          created_at: NOW, updated_at: meta.uploadedAt ?? NOW,
+        }));
+      return { results: rows, success: true };
     }
     if (flat.includes("FROM mb_files WHERE path = ?")) {
       const path = String(params[0]);
       const meta = fileStore.get(path);
+      if (!meta) return { results: [], success: true };
+      // Distinguish SELECT that expects new columns vs legacy
+      if (flat.includes("checksum_sha256")) {
+        return {
+          results: [{ path, size: meta.size, content_type: meta.contentType, etag: meta.etag, checksum_sha256: meta.sha256 ?? null, uploaded_at: meta.uploadedAt ?? null, entity_type: meta.entityType ?? null, entity_id: meta.entityId ?? null, created_at: NOW, updated_at: meta.uploadedAt ?? NOW }],
+          success: true,
+        };
+      }
       return {
-        results: meta
-          ? [{ path, size: meta.size, content_type: meta.contentType, etag: meta.etag, created_at: NOW, updated_at: NOW }]
-          : [],
+        results: [{ path, size: meta.size, content_type: meta.contentType, etag: meta.etag, created_at: NOW, updated_at: NOW }],
         success: true,
       };
     }
+    // Support SELECT path FROM mb_files ORDER BY path LIMIT etc. for reconcile
+    if (flat.includes("SELECT path FROM mb_files ORDER BY path")) {
+      const limitMatch = /LIMIT (\d+)/.exec(flat);
+      const limit = limitMatch ? Number(limitMatch[1]) : Number(params[0] ?? 1000);
+      const rows = [...fileStore.keys()].sort().slice(0, limit).map((path) => ({ path }));
+      return { results: rows, success: true };
+    }
+    if (flat.includes("SELECT path FROM mb_files WHERE checksum_sha256 IS NULL") || flat.includes("SELECT path FROM mb_files WHERE checksum_sha256")) {
+      const rows = [...fileStore.entries()].filter(([, meta]) => !meta.sha256 || !meta.uploadedAt).map(([path]) => ({ path }));
+      return { results: rows.slice(0, 1000), success: true };
+    }
+    // Handle SELECT path with OFFSET? Not needed
+    if (flat.includes("SELECT path, size, content_type, etag") && flat.includes("FROM mb_files")) {
+      // Generic fallback for list
+      const rows = [...fileStore.entries()].map(([path, meta]) => ({
+        path, size: meta.size, content_type: meta.contentType, etag: meta.etag,
+        checksum_sha256: meta.sha256 ?? null,
+        uploaded_at: meta.uploadedAt ?? null,
+        entity_type: meta.entityType ?? null,
+        entity_id: meta.entityId ?? null,
+        created_at: NOW, updated_at: NOW,
+      }));
+      return { results: rows, success: true };
+    }
     if (flat.includes("INSERT INTO mb_files")) {
+      // Support legacy 4-col, v7 10-col, and fallback 8-col (older harness)
+      if (params.length === 4) {
+        const [path, size, contentType, etag] = params as [string, number, string, string];
+        fileStore.set(path, { size, contentType, etag });
+        return { results: [], success: true };
+      }
+      if (params.length === 10) {
+        const [path, size, contentType, etag, createdAt, updatedAt, sha256v, uploadedAt, entityType, entityId] = params as [string, number, string, string, string, string, string, string, string | null, string | null];
+        void createdAt; void updatedAt;
+        fileStore.set(path, { size, contentType, etag, sha256: sha256v, uploadedAt, entityType, entityId });
+        return { results: [], success: true };
+      }
+      if (params.length >= 8) {
+        const [path, size, contentType, etag, sha256v, uploadedAt, entityType, entityId] = params as [string, number, string, string, string, string, string | null, string | null];
+        fileStore.set(path, { size, contentType, etag, sha256: sha256v, uploadedAt, entityType, entityId });
+        return { results: [], success: true };
+      }
+      // Fallback: generic
       const [path, size, contentType, etag] = params as [string, number, string, string];
-      fileStore.set(path, { size, contentType, etag });
+      fileStore.set(String(path), { size: Number(size), contentType: String(contentType), etag: String(etag) });
+      return { results: [], success: true };
+    }
+    // Artifact SELECTs
+    if (flat.includes("FROM mb_artifacts WHERE artifact_id = ?")) {
+      const artifactId = String(params[0]);
+      const meta = artifactStore.get(artifactId);
+      if (!meta) return { results: [], success: true };
+      return {
+        results: [{
+          artifact_id: meta.artifactId, storage_key: meta.storageKey, size: meta.size, content_type: meta.contentType, etag: meta.etag,
+          checksum_sha256: meta.sha256, uploaded_at: meta.uploadedAt, entity_type: meta.entityType, entity_id: meta.entityId, created_at: meta.createdAt,
+        }],
+        success: true,
+      };
+    }
+    // Probe SELECT artifact_id FROM mb_artifacts LIMIT 1
+    if (flat.includes("SELECT artifact_id FROM mb_artifacts LIMIT 1")) {
+      const first = [...artifactStore.values()][0];
+      return { results: first ? [{ artifact_id: first.artifactId }] : [], success: true };
+    }
+    // List artifacts ordering
+    if (flat.includes("FROM mb_artifacts ORDER BY artifact_id") || flat.includes("FROM mb_artifacts WHERE")) {
+      // Handle reconciliation selects: SELECT artifact_id, storage_key, size, etag, checksum_sha256, uploaded_at, entity_type, entity_id FROM mb_artifacts ORDER BY artifact_id LIMIT 1000
+      // Also generic
+      if (flat.includes("ORDER BY artifact_id")) {
+        const limitMatch = /LIMIT (\d+)/.exec(flat);
+        const limit = limitMatch ? Number(limitMatch[1]) : 1000;
+        const rows = [...artifactStore.values()].sort((a, b) => (a.artifactId < b.artifactId ? -1 : 1)).slice(0, limit).map((meta) => ({
+          artifact_id: meta.artifactId, storage_key: meta.storageKey, size: meta.size, content_type: meta.contentType, etag: meta.etag,
+          checksum_sha256: meta.sha256, uploaded_at: meta.uploadedAt, entity_type: meta.entityType, entity_id: meta.entityId, created_at: meta.createdAt,
+        }));
+        return { results: rows, success: true };
+      }
+      // Simple SELECT artifact_id or count?
+      const rows = [...artifactStore.values()].map((meta) => ({
+        artifact_id: meta.artifactId, storage_key: meta.storageKey, size: meta.size, content_type: meta.contentType, etag: meta.etag,
+        checksum_sha256: meta.sha256, uploaded_at: meta.uploadedAt, entity_type: meta.entityType, entity_id: meta.entityId, created_at: meta.createdAt,
+      }));
+      return { results: rows, success: true };
+    }
+    // Insert artifacts: INSERT INTO mb_artifacts (artifact_id, storage_key, size, content_type, etag, checksum_sha256, uploaded_at, entity_type, entity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    if (flat.includes("INSERT INTO mb_artifacts")) {
+      const [artifactId, storageKey, size, contentType, etag, sha256v, uploadedAt, entityType, entityId, createdAt] = params as [string, string, number, string | null, string, string, string, string | null, string | null, string];
+      if (artifactStore.has(artifactId)) {
+        throw Object.assign(new Error("UNIQUE constraint failed: mb_artifacts.artifact_id"), { code: "SQLITE_CONSTRAINT" });
+      }
+      // storage_key UNIQUE
+      for (const existing of artifactStore.values()) {
+        if (existing.storageKey === storageKey) {
+          throw Object.assign(new Error("UNIQUE constraint failed: mb_artifacts.storage_key"), { code: "SQLITE_CONSTRAINT" });
+        }
+      }
+      artifactStore.set(artifactId, {
+        artifactId, storageKey, size, contentType, etag, sha256: sha256v, uploadedAt, entityType, entityId, createdAt,
+      });
       return { results: [], success: true };
     }
     throw new Error(`harness: unmodelled project SQL: ${flat}`);
@@ -735,29 +1022,86 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     ...(options.rateLimiterRequired ? { MB_RATE_LIMITER_REQUIRED: "true" } : {}),
     ...rateLimiters,
     FILES: {
-      async get(key: string) {
+      async get(key: string, _options?: { onlyIf?: { etagDoesNotMatch?: string } }) {
         const body = r2Bodies.get(key);
         if (body === undefined) return null;
-        const object = r2Object(key, body);
-        return { ...object, body: new Response(body).body ?? undefined };
+        const meta = r2Meta.get(key);
+        const object = r2Object(key, body, meta);
+        void _options;
+        return { ...object, body: new Response(body).body ?? undefined } as unknown as R2Object;
       },
-      async put(key: string, value: ReadableStream | string) {
-        const body = typeof value === "string" ? value : await new Response(value).text();
+      async head(key: string) {
+        const body = r2Bodies.get(key);
+        if (body === undefined) return null;
+        const meta = r2Meta.get(key);
+        return r2Object(key, body, meta);
+      },
+      async put(key: string, value: ReadableStream | string | ArrayBuffer | ArrayBufferView | Blob | null, options?: import("./contracts").R2PutOptions & { onlyIf?: import("./contracts").R2Conditional }) {
+        // Atomic conditional check: reserve key synchronously before async body read
+        const isConditional = options?.onlyIf?.etagDoesNotMatch === "*";
+        if (isConditional && r2Bodies.has(key)) {
+          return null as unknown as R2Object;
+        }
+        if (isConditional) {
+          // Reserve to block concurrent conditional puts
+          r2Bodies.set(key, "__pending__");
+          r2Meta.set(key, { size: 0, etag: "__pending__", uploaded: new Date() });
+        }
+        let body: string;
+        try {
+          if (typeof value === "string") body = value;
+          else if (value instanceof ReadableStream) body = await new Response(value).text();
+          else if (value instanceof ArrayBuffer) body = new TextDecoder().decode(value);
+          else if (ArrayBuffer.isView(value)) body = new TextDecoder().decode(value as ArrayBufferView);
+          else if (value === null) body = "";
+          else if (value instanceof Blob) body = await (value as Blob).text();
+          else body = await new Response(value as unknown as ReadableStream).text();
+        } catch {
+          if (isConditional) {
+            r2Bodies.delete(key);
+            r2Meta.delete(key);
+          }
+          throw new Error("r2_read_failed");
+        }
+        // If another conditional put raced and we reserved, the first to complete wins; second's reservation already checked above
+        // But if we reserved, ensure we don't have a pending marker from a failed concurrent that we just deleted? For single-threaded test, this is fine.
+        const size = new TextEncoder().encode(body).byteLength;
+        const etag = `etag-${key.length}-${size}-${body.slice(0, 8)}`;
         r2Bodies.set(key, body);
-        r2Keys.push(key);
-        return r2Object(key, body);
+        const ct = options?.httpMetadata instanceof Headers ? options.httpMetadata.get("content-type") ?? undefined : (options?.httpMetadata as { contentType?: string } | undefined)?.contentType;
+        r2Meta.set(key, { size, etag, uploaded: new Date(), contentType: ct });
+        if (!r2Keys.includes(key)) r2Keys.push(key);
+        else {
+          // Ensure r2Keys doesn't duplicate for concurrent second attempt that was blocked? But second was returned null earlier, so not here
+        }
+        return r2Object(key, body, { size, etag });
       },
       async delete(key: string | string[]) {
-        for (const value of Array.isArray(key) ? key : [key]) r2Bodies.delete(value);
+        for (const value of Array.isArray(key) ? key : [key]) {
+          r2Bodies.delete(value);
+          r2Meta.delete(value);
+        }
       },
-      async list() {
-        return { objects: [], truncated: false };
+      async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
+        const prefix = options?.prefix ?? "";
+        const limit = options?.limit ?? 1000;
+        const allKeys = [...r2Bodies.keys()].filter((k) => k.startsWith(prefix)).sort();
+        const start = options?.cursor ? allKeys.findIndex((k) => k > options.cursor!) : 0;
+        const slice = allKeys.slice(start >= 0 ? start : 0, (start >= 0 ? start : 0) + limit);
+        const objects = slice.map((key) => {
+          const body = r2Bodies.get(key)!;
+          const meta = r2Meta.get(key);
+          return r2Object(key, body, meta);
+        });
+        const truncated = allKeys.length > (start >= 0 ? start : 0) + limit;
+        return { objects, truncated, cursor: truncated ? slice.at(-1) : undefined, delimitedPrefixes: [] } as unknown as ReturnType<MiniBaseEnv["FILES"]["list"]>;
       },
-    },
+    } as unknown as MiniBaseEnv["FILES"],
   };
 
   const originalFetch = globalThis.fetch;
   let projectD1FailuresRemaining = options.failProjectD1Requests ?? 0;
+  let artifactInsertFailuresRemaining = options.failArtifactInsertRequests ?? 0;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const match = D1_QUERY.exec(url);
@@ -767,15 +1111,30 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     // SQLite sees a statement. This is the metric command tests use for the
     // one-round-trip contract.
     d1Calls.push({ databaseId: match[2], sql: payload.sql, params: payload.params ?? [] });
+    const isArtifactInsert = payload.sql.includes("INSERT INTO mb_artifacts");
+    if (isArtifactInsert && artifactInsertFailuresRemaining > 0) {
+      artifactInsertFailuresRemaining -= 1;
+      return Response.json({ success: false, errors: [{ message: "transport failed" }] }, { status: 503 });
+    }
     if (projectD1FailuresRemaining > 0) {
       projectD1FailuresRemaining -= 1;
       return Response.json({ success: false, errors: [{ message: "transport failed" }] }, { status: 503 });
     }
-    const result = executeProjectSql(match[2], payload.sql, payload.params ?? []);
-    if (!result) {
-      return Response.json({ success: false, errors: [{ message: "unknown database" }] }, { status: 404 });
+    try {
+      const result = executeProjectSql(match[2], payload.sql, payload.params ?? []);
+      if (!result) {
+        return Response.json({ success: false, errors: [{ message: "unknown database" }] }, { status: 404 });
+      }
+      return Response.json({ success: true, result: [result] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Simulate D1 error shape for SQLite constraint/column/table errors so callers can
+      // branch on message content (e.g., "no such column", "UNIQUE constraint failed").
+      const status = message.includes("UNIQUE constraint failed") ? 400 : 400;
+      // The client code interprets thrown errors containing those substrings, regardless of status.
+      // To make queryProjectD1 throw with that message, we return success false.
+      return Response.json({ success: false, errors: [{ message }] }, { status });
     }
-    return Response.json({ success: true, result: [result] });
   }) as typeof fetch;
 
   async function request(path: string, init: RequestInit = {}) {
@@ -802,6 +1161,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     d1Calls,
     controlSql,
     rateLimitCalls,
+    artifacts,
     request,
     dispose() {
       globalThis.fetch = originalFetch;

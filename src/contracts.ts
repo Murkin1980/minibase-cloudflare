@@ -17,6 +17,14 @@ export interface D1Database {
   batch<T = Record<string, unknown>>(statements: D1PreparedStatement[]): Promise<Array<D1Result<T>>>;
 }
 
+export interface R2Conditional {
+  etagMatches?: string;
+  etagDoesNotMatch?: string;
+  uploadedBefore?: Date;
+  uploadedAfter?: Date;
+  secondsGranularity?: boolean;
+}
+
 export interface R2Object {
   key: string;
   size: number;
@@ -25,14 +33,41 @@ export interface R2Object {
   uploaded: Date;
   body?: ReadableStream;
   writeHttpMetadata(headers: Headers): void;
+  checksums?: { md5?: ArrayBuffer | null; sha1?: ArrayBuffer | null; sha256?: ArrayBuffer | null; sha384?: ArrayBuffer | null; sha512?: ArrayBuffer | null };
+  httpMetadata?: { contentType?: string } | Headers;
+  customMetadata?: Record<string, string>;
+  storageClass?: string;
+}
+
+export interface R2GetOptions {
+  onlyIf?: R2Conditional;
+  range?: unknown;
+}
+
+export interface R2PutOptions {
+  onlyIf?: R2Conditional;
+  httpMetadata?: { contentType?: string } | Headers;
+  customMetadata?: Record<string, string>;
+  md5?: ArrayBuffer | ArrayBufferView | string;
+  sha1?: ArrayBuffer | ArrayBufferView | string;
+  sha256?: ArrayBuffer | ArrayBufferView | string;
+  sha384?: ArrayBuffer | ArrayBufferView | string;
+  sha512?: ArrayBuffer | ArrayBufferView | string;
 }
 
 export interface R2Bucket {
-  get(key: string): Promise<R2Object | null>;
+  head(key: string): Promise<R2Object | null>;
+  get(key: string, options?: R2GetOptions): Promise<R2Object | null>;
+  get(key: string, options: R2GetOptions & { onlyIf: R2Conditional }): Promise<R2Object | null>;
   put(
     key: string,
-    value: ReadableStream,
-    options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null,
+    options?: R2PutOptions,
+  ): Promise<R2Object>;
+  put(
+    key: string,
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null,
+    options: R2PutOptions & { onlyIf: R2Conditional },
   ): Promise<R2Object | null>;
   delete(key: string | string[]): Promise<void>;
   list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{

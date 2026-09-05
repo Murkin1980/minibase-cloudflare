@@ -7,6 +7,7 @@ const statusByCode: Record<string, number> = {
   project_not_found: 404,
   record_not_found: 404,
   file_not_found: 404,
+  artifact_not_found: 404,
   content_type_must_be_application_json: 415,
   request_body_too_large: 413,
   file_too_large: 413,
@@ -18,6 +19,8 @@ const statusByCode: Record<string, number> = {
    * (missing authoritative version row and/or static trigger) without writing.
    */
   command_schema_not_ready: 409,
+  file_schema_not_ready: 409,
+  artifact_already_exists: 409,
   inconsistent_schema_state: 409,
   cloudflare_api_error: 502,
   rate_limited: 429,
@@ -65,6 +68,8 @@ const clientErrorCodes = new Set([
   "invalid_quota",
   "invalid_schema_version",
   "invalid_file_path",
+  "invalid_artifact_id",
+  "invalid_entity_link",
   "content_length_required",
   "file_upload_failed",
 ]);
