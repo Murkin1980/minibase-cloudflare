@@ -1,5 +1,127 @@
 # MiniBase session notes
 
+## 2026-09-05 — Iteration 38: MiniBase vNext CP-04 query + indexes
+
+Decision unchanged: **EXTEND_EXISTING**. No new repository, backend, database,
+ORM, or SQL API. CP-04 extends the one endpoint that needed it,
+`GET /v1/data/{collection}`.
+
+### Baseline before the change
+
+`npm run check` PASS at `23cb091`: 177 tests across 26 files, bundle
+71.44 KiB / gzip 14.89 KiB. List SQL was
+`WHERE collection = ? AND id > ? ORDER BY id LIMIT ?`, cursor = the record ID,
+one D1 REST round trip per page. Project schema latest version 4. Existing
+`mb_records` indexes: PK `(collection, id)` and the documented-unused
+`(collection, updated_at DESC)`.
+
+### Evidence used to choose the allowlists
+
+Only fields with a real consumer behind them were added. `docs/SCALABILITY.md`
+items D/E ask for filtering on indexed fields plus explicit ordering;
+`CODER_INSTRUCTION_1C_TUTOR_ONBOARDING.md` §8/§10 stores `schemaVersion` on every
+document shape and resolves sync conflicts by `updatedAt`. That yields exactly
+four filterable fields (`id`, `createdAt`, `updatedAt`, `schemaVersion`), three
+orders, and four selectable response fields. Nothing was added speculatively —
+an index without a query is waste, and a filter without an index is a scan
+charged to the tenant.
+
+### Implemented
+
+1. **`src/record-query.ts`** — the whole query contract in one place: static
+   allowlists of fields, operators, orders, and select names; per-field value
+   validation; the statement builder; and the opaque cursor. No caller text ever
+   becomes SQL, every value is bound, and there is no `OFFSET`.
+2. **Keyset cursor per order** — `mbq1.<base64url>` carrying the sort value, the
+   tie-breaker `id`, and a digest of collection + filters + order. A cursor from
+   a different query is a deterministic 400, not a wrong page. A request with no
+   `filter` and no `order` keeps the pre-CP-04 bare-record-ID cursor.
+3. **Row-value keyset comparison** `(sort, id) > (?, ?)`, so a page boundary
+   inside a run of equal timestamps can neither skip nor repeat a record, and
+   SQLite can seek into the composite index instead of scanning.
+4. **Project schema v5 — indexes only.** Three `CREATE INDEX IF NOT EXISTS` on
+   `mb_records`, including an expression index over the fixed JSON path
+   `$.schemaVersion`. No `ALTER TABLE`, no generated column, no row rewritten.
+   A tenant still on v4 keeps serving every CP-04 query — same results, more
+   rows scanned — which is why this rollout needs no coordination.
+5. **SDK** — typed `filter` / `order` / `select` / opaque `after`, mirroring the
+   server allowlists (asserted equal in `src/client.test.ts`). A pre-CP-04
+   `list()` call serializes byte-identically.
+6. **Docs** — `docs/DATA_API.md` §Query (full contract), `docs/DATA_MODEL.md`
+   (v5 index table and rationale), `docs/MIGRATIONS.md` (why v5 is zero-risk and
+   why it is still not applied anywhere), `docs/PROJECT_ISOLATION.md` §9,
+   `docs/CLIENT_SDK.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `docs/SCALABILITY.md`.
+
+### Verification
+
+`npm run check` PASS: 225 tests across 28 files (177 baseline + 48 new), D1
+integration, migration contract, release readiness, worker integration, and the
+production dry-run build.
+
+`src/query-index.test.ts` runs the exact emitted statements through real SQLite
+(Miniflare) with the real schema applied and asserts on `EXPLAIN QUERY PLAN`:
+
+```
+?limit=10                              SEARCH … USING INDEX sqlite_autoindex_mb_records_1 (collection=?)
+?limit=10&after=rec-0100               SEARCH … (collection=? AND id>?)
+?order=createdAt.asc|desc              SEARCH … USING INDEX mb_records_collection_created_id_idx
+?order=updatedAt.asc|desc              SEARCH … USING INDEX mb_records_collection_updated_id_idx
+?filter[updatedAt.gte]=…&order=…       SEARCH … mb_records_collection_updated_id_idx (collection=? AND updated_at>?)
+?filter[schemaVersion]=2               SEARCH … mb_records_collection_schema_version_id_idx (collection=? AND <expr>=?)
+```
+
+No plan contains a bare `SCAN mb_records` or a temp B-tree sort. The same file
+upgrades a populated v4 database to v5 and asserts every row compares equal
+before and after.
+
+The cursor/query binding was mutation-tested: removing the digest check makes
+exactly the intended test fail.
+
+### Review fixes applied before merge
+
+1. **Timestamp correctness.** The first pattern accepted a space separator, an
+   arbitrary offset, and — worst — a value with **no** timezone. Since SQLite
+   compares `created_at` / `updated_at` as TEXT and every stored value is
+   canonical UTC from `toISOString()`, a differently-shaped filter value
+   compares lexicographically against a different shape and silently returns
+   wrong rows: `2026-09-01T00:00:00+05:00` sorts *after* `...T00:00:00.000Z` as
+   text while being the earlier instant. Filter values now require an explicit
+   timezone and are normalized to canonical UTC before binding, so equivalent
+   instants produce byte-identical parameters and the same cursor digest.
+   Nonexistent calendar dates are rejected explicitly, because `Date.parse`
+   rolls `2026-02-30` over into March rather than failing. Seven new tests.
+2. **Version bump** to `0.26.0` in `package.json`, `package-lock.json` (which
+   was also stale at `0.24.0`), `/health`, and the worker smoke assertion. The
+   `/v1` namespace is unchanged.
+3. **Cursor terminology.** "Signature" is now "query-consistency digest"
+   throughout code and docs, with the explicit statement that FNV-1a is not a
+   cryptographic signature, the cursor is not authenticated or tamper-proof, and
+   the digest guards against accidental reuse rather than an attacker.
+
+Bundle 71.44 KiB → 82.20 KiB (gzip 14.89 → 17.94 KiB), +10.76 KiB. That is the
+query parser, the allowlists, the statement builder, the timestamp normalizer,
+and the cursor codec; the SDK types are erased at build time. No dependency was
+added.
+
+One query is still **one** D1 REST round trip — asserted directly.
+
+### Deliberately not done
+
+- No arbitrary SQL, SQL fragments, dynamic column names, joins, relation graph,
+  full-text or fuzzy search, analytics, or `OFFSET`.
+- No filtering on arbitrary JSON fields. A field is added only with a confirmed
+  query and an index.
+- The unused v1 `(collection, updated_at DESC)` index was **not** dropped.
+  Removing an index is a separate change with its own justification.
+- No CP-05 commands/transactions, no CP-06 files work.
+- v5 was **not** applied to any remote or production D1. `interactive-kp` is
+  untouched and stays on v4. Rolling v5 out is a separate operational step
+  (`POST /v1/projects/{id}/schema/apply` per project), documented in
+  `docs/MIGRATIONS.md`.
+
+Deep change detected: **NO**. No Cloudflare resource, secret, production schema,
+or deployment was touched.
+
 ## 2026-09-05 — Iteration 37: MiniBase vNext CP-03 project isolation
 
 Decision for the MPE data platform remains **EXTEND_EXISTING**. Work stayed

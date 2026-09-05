@@ -9,7 +9,7 @@ MB5 Supabase move   [##########] 100%
 MB6 Client SDK      [##########] 100%
 MB7 Hardening       [##########] 100%
 MB8 Launch          [##########] 100%
-MB9 vNext upgrade   [###-------]  30%   CP-03 of 10
+MB9 vNext upgrade   [####------]  40%   CP-04 of 10
 
 Overall             [##########] 100%
 ```
@@ -34,5 +34,7 @@ Overall             [##########] 100%
   in `docs/SCALABILITY.md` as ten checkpoints (CP-01…CP-10). CP-01 (foundation
   hardening), CP-02 (schema version authority & verification), and CP-03 (project
   isolation: per-project quotas, per-route rate periods, fail-closed project
-  context) are complete locally; they are backward compatible and add no paid
+  context), and CP-04 (query + indexes: allowlisted filter/order/select, opaque
+  keyset cursor, project schema v5 query indexes proven by EXPLAIN QUERY PLAN)
+  are complete locally; they are backward compatible and add no paid
   resource. Deployment remains a separate owner-approved step.

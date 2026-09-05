@@ -5,7 +5,7 @@ import {
   deleteRecord,
   getRecord,
   listRecords,
-  parseListQuery,
+  parseRecordListQuery,
   putRecord,
   validateCollection,
   validateRecordData,
@@ -42,7 +42,7 @@ const application = {
     const url = new URL(request.url);
     const limits = resolveLimits(env);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.25.0" });
+      return json({ service: "minibase", status: "ok", version: "0.26.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
@@ -192,7 +192,7 @@ const application = {
         const projectLimits = principal.limits;
         if (request.method === "GET" && id) return cors(json(await getRecord(env, principal, collection, id)));
         if (request.method === "GET" && !id) {
-          return cors(json(await listRecords(env, principal, collection, parseListQuery(url, projectLimits))));
+          return cors(json(await listRecords(env, principal, collection, parseRecordListQuery(url, collection, projectLimits))));
         }
         if (request.method === "PUT" && id) {
           return cors(json(await putRecord(

@@ -16,6 +16,51 @@ export interface MiniBaseList<T extends Record<string, unknown>> {
   hasMore: boolean;
 }
 
+/* --------------------------------------------------- CP-04 query contract */
+
+/**
+ * The server's static allowlists, mirrored so the SDK cannot build a request
+ * MiniBase would reject. These must stay in step with `src/record-query.ts`;
+ * `src/client.test.ts` asserts that they do.
+ */
+export const filterOperators = {
+  id: ["eq"],
+  createdAt: ["eq", "gt", "gte", "lt", "lte"],
+  updatedAt: ["eq", "gt", "gte", "lt", "lte"],
+  schemaVersion: ["eq"],
+} as const;
+
+export const orderFieldNames = ["id", "createdAt", "updatedAt"] as const;
+export const selectFieldNames = ["id", "data", "createdAt", "updatedAt"] as const;
+
+export type MiniBaseFilterField = keyof typeof filterOperators;
+export type MiniBaseOrderField = (typeof orderFieldNames)[number];
+export type MiniBaseSelectField = (typeof selectFieldNames)[number];
+
+type FilterValue<F extends MiniBaseFilterField> = F extends "schemaVersion" ? number : string;
+
+export type MiniBaseFilter = {
+  [F in MiniBaseFilterField]?: {
+    [O in (typeof filterOperators)[F][number]]?: FilterValue<F>;
+  };
+};
+
+export interface MiniBaseOrder {
+  field: MiniBaseOrderField;
+  direction?: "asc" | "desc";
+}
+
+export interface MiniBaseListOptions {
+  limit?: number;
+  /** The previous page's `nextAfter`, passed back unmodified. Opaque. */
+  after?: string;
+  filter?: MiniBaseFilter;
+  order?: MiniBaseOrder;
+  select?: MiniBaseSelectField[];
+}
+
+const cursorPattern = /^(mbq1\.[A-Za-z0-9_-]+|[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/;
+
 export class MiniBaseClientError extends Error {
   constructor(
     public readonly code: string,
@@ -101,9 +146,19 @@ export class MiniBaseClient {
     return `/v1/data/${encodeURIComponent(collection)}${id === undefined ? "" : `/${encodeURIComponent(id)}`}`;
   }
 
+  /**
+   * Lists a collection.
+   *
+   * The CP-04 options are typed against the server's allowlists, so a filter,
+   * order, or select the Worker would reject with 400 does not compile — and a
+   * call written before CP-04 keeps its exact previous behaviour, including the
+   * bare record-ID cursor. `after` is deliberately typed as the opaque
+   * `nextAfter` of the previous page; it is not a record ID once a filter or
+   * order is in play, and must be passed back unmodified.
+   */
   list<T extends Record<string, unknown>>(
     collection: string,
-    options: { limit?: number; after?: string } = {},
+    options: MiniBaseListOptions = {},
   ): Promise<MiniBaseList<T>> {
     const path = this.collectionPath(collection);
     const query = new URLSearchParams();
@@ -113,8 +168,37 @@ export class MiniBaseClient {
       }
       query.set("limit", String(options.limit));
     }
+    for (const [field, condition] of Object.entries(options.filter ?? {})) {
+      if (condition === undefined) continue;
+      const operators = filterOperators[field as MiniBaseFilterField];
+      for (const [operator, value] of Object.entries(condition as Record<string, unknown>)) {
+        if (value === undefined) continue;
+        if (!(operators as readonly string[]).includes(operator)) throw new Error("invalid_operator");
+        query.set(`filter[${field}${operator === "eq" ? "" : `.${operator}`}]`, String(value));
+      }
+    }
+    if (options.order) {
+      const { field, direction = "asc" } = options.order;
+      if (!(orderFieldNames as readonly string[]).includes(field)) throw new Error("invalid_order");
+      if (direction !== "asc" && direction !== "desc") throw new Error("invalid_order");
+      query.set("order", `${field}.${direction}`);
+    }
+    if (options.select) {
+      if (options.select.length === 0) throw new Error("invalid_select");
+      for (const field of options.select) {
+        if (!(selectFieldNames as readonly string[]).includes(field)) throw new Error("invalid_select");
+      }
+      query.set("select", [...new Set(options.select)].join(","));
+    }
     if (options.after !== undefined) {
-      if (!recordIdPattern.test(options.after)) throw new Error("invalid_record_id");
+      // A legacy (unfiltered, unordered) cursor is still a record ID and is
+      // validated as one; a CP-04 cursor is opaque and only shape-checked.
+      const legacy = !options.order && !options.filter;
+      if (legacy) {
+        if (!recordIdPattern.test(options.after)) throw new Error("invalid_record_id");
+      } else if (!cursorPattern.test(options.after)) {
+        throw new Error("invalid_cursor");
+      }
       query.set("after", options.after);
     }
     return this.request(`${path}${query.size ? `?${query}` : ""}`);

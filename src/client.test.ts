@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { MiniBaseClient, MiniBaseClientError } from "./client";
+import {
+  filterOperators,
+  MiniBaseClient,
+  MiniBaseClientError,
+  orderFieldNames,
+  selectFieldNames,
+} from "./client";
+import { recordQueryContract } from "./record-query";
 
 describe("MiniBase client", () => {
   it("sends an authenticated encoded records request", async () => {
@@ -98,5 +105,79 @@ describe("MiniBase client", () => {
       headers: expect.objectContaining({ "content-length": "5", "content-type": "text/plain" }),
     }));
     expect(() => client.deleteFile("../escape")).toThrow("invalid_file_path");
+  });
+});
+
+describe("MiniBase client CP-04 query options", () => {
+  function stub() {
+    const requestFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ records: [], nextAfter: null, hasMore: false }),
+    );
+    const client = new MiniBaseClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_publishable_test-client",
+      fetch: requestFetch,
+    });
+    return { client, requestFetch, url: () => String(requestFetch.mock.calls.at(-1)?.[0]) };
+  }
+
+  it("leaves a pre-CP-04 call byte-identical", async () => {
+    const { client, url } = stub();
+    await client.list("lessons", { limit: 10, after: "rec-1" });
+    expect(url()).toBe("https://minibase.example/v1/data/lessons?limit=10&after=rec-1");
+  });
+
+  it("serializes filter, order, and select into the server's query shape", async () => {
+    const { client, url } = stub();
+    await client.list("lessons", {
+      filter: { schemaVersion: { eq: 2 }, updatedAt: { gte: "2026-09-01T00:00:00.000Z" } },
+      order: { field: "updatedAt", direction: "desc" },
+      select: ["id", "updatedAt"],
+      limit: 25,
+    });
+    const parsed = new URL(url());
+    expect(parsed.searchParams.get("filter[schemaVersion]")).toBe("2");
+    expect(parsed.searchParams.get("filter[updatedAt.gte]")).toBe("2026-09-01T00:00:00.000Z");
+    expect(parsed.searchParams.get("order")).toBe("updatedAt.desc");
+    expect(parsed.searchParams.get("select")).toBe("id,updatedAt");
+    expect(parsed.searchParams.get("limit")).toBe("25");
+  });
+
+  it("defaults the order direction to ascending", async () => {
+    const { client, url } = stub();
+    await client.list("lessons", { order: { field: "createdAt" } });
+    expect(new URL(url()).searchParams.get("order")).toBe("createdAt.asc");
+  });
+
+  it("round-trips an opaque CP-04 cursor without validating it as a record ID", async () => {
+    const { client, url } = stub();
+    const cursor = "mbq1.WyIxYWJjIiwiMjAyNiIsInJlYy0xIl0";
+    await client.list("lessons", { order: { field: "updatedAt" }, after: cursor });
+    expect(new URL(url()).searchParams.get("after")).toBe(cursor);
+  });
+
+  it("refuses locally anything the server would reject with 400", () => {
+    const { client, requestFetch } = stub();
+    // Typed away at compile time; asserted at runtime for untyped callers.
+    expect(() => client.list("lessons", { filter: { schemaVersion: { gt: 1 } } as never }))
+      .toThrow("invalid_operator");
+    expect(() => client.list("lessons", { order: { field: "data" as never } }))
+      .toThrow("invalid_order");
+    expect(() => client.list("lessons", { select: ["collection" as never] }))
+      .toThrow("invalid_select");
+    expect(() => client.list("lessons", { select: [] })).toThrow("invalid_select");
+    expect(() => client.list("lessons", { order: { field: "id" }, after: "not a cursor!" }))
+      .toThrow("invalid_cursor");
+    expect(() => client.list("lessons", { limit: 0 })).toThrow("invalid_limit");
+    expect(requestFetch).not.toHaveBeenCalled();
+  });
+
+  it("mirrors the server allowlists exactly", () => {
+    expect(Object.keys(filterOperators).sort()).toEqual(Object.keys(recordQueryContract.filters).sort());
+    for (const [field, operators] of Object.entries(recordQueryContract.filters)) {
+      expect([...filterOperators[field as keyof typeof filterOperators]]).toEqual(operators);
+    }
+    expect([...orderFieldNames]).toEqual(recordQueryContract.orders);
+    expect([...selectFieldNames]).toEqual(recordQueryContract.select);
   });
 });

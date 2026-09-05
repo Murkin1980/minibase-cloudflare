@@ -412,8 +412,35 @@ neither is accepted from a request.
 | Per-project numeric request rate | The binding owns `limit`/`period`; a MiniBase-maintained counter costs a control-D1 write per request | a scoped decision, see §6 |
 | Project-scoped management keys | The control plane is account-level by design; no IAM platform | `docs/SCALABILITY.md` item M, P3 |
 | Row-level end-user authorization | MiniBase has no end-user identity on the data plane | separate design |
-| Project schema v5 | Would make the Worker write columns the live `interactive-kp` tenant does not have | CP-06 |
+| A project schema version that adds a *column* | Would make the Worker write a column the live `interactive-kp` tenant does not have | CP-06 |
 
 Nothing in CP-03 replaces D1, R2, the Worker, or the existing API contract. No
 new project schema version is introduced, so a live tenant is unaffected until it
 chooses to set a quota.
+
+---
+
+## 9. CP-04 query layer: what does *not* change
+
+The CP-04 record query (`docs/DATA_API.md` §Query) is entirely inside the
+existing isolation model, and every guarantee above still holds verbatim:
+
+- the project is still resolved **only** from the key hash; no query parameter
+  names a project, a database, or a collection outside that project's D1;
+- filter, order, and select names are chosen by the server from a static
+  allowlist — a caller's text never becomes SQL, and every value is bound;
+- an unknown field, operator, order, select, or cursor is a deterministic 400
+  **before** any project D1 or R2 is contacted;
+- field selection shapes the response only; it cannot narrow a filter, the
+  cursor, or an authorization check, and cannot name an internal column;
+- a cursor is opaque, carries its own filter/order/collection digest, and is
+  refused fail-closed if it does not match the request that presents it;
+- per-project `maxPageSize`, the per-project rate bucket, the origin allowlist,
+  and the identical-401 no-existence-leak rule all apply unchanged;
+- one query is still one D1 REST round trip, so no tenant's query costs another
+  tenant additional control-plane work.
+
+Project schema v5 adds **indexes only** — no column — so a tenant that has not
+run `schema/apply` keeps serving every CP-04 query with identical results.
+`src/record-query.test.ts` covers the cross-project, injection, quota, and
+publishable-key cases directly.

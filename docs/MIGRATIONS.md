@@ -77,10 +77,10 @@ cache. Returns:
 {
   "projectId": "11111111-1111-4111-8111-111111111111",
   "status": "ok",
-  "authoritativeVersion": 4,
-  "cachedVersion": 4,
-  "latestKnownVersion": 4,
-  "appliedVersions": [1, 2, 3, 4],
+  "authoritativeVersion": 5,
+  "cachedVersion": 5,
+  "latestKnownVersion": 5,
+  "appliedVersions": [1, 2, 3, 4, 5],
   "pendingVersions": [],
   "issues": []
 }
@@ -89,7 +89,7 @@ cache. Returns:
 Status outcomes:
 - `"ok"`: Project DB versions are contiguous and match control DB cache, or a genuinely unmigrated project (no table, control version = 0).
 - `"drift_detected"`: Control DB cache differs from project DB authoritative version (when project DB has a valid version table).
-- `"inconsistent"`: Project DB contains version gaps (e.g. `[1, 3]`), unknown future versions (e.g. `[1, 2, 3, 4, 5]`), or missing version table when control DB expected version > 0.
+- `"inconsistent"`: Project DB contains version gaps (e.g. `[1, 3]`), unknown future versions (e.g. a version beyond `latestKnownVersion`), or missing version table when control DB expected version > 0.
 
 ### Applying schema
 
@@ -103,11 +103,11 @@ versions in strict ascending order, updates `mb_schema_versions`, syncs the
 control DB `data_schema_version` cache, and appends an audit event. Returns:
 
 ```json
-{ "previousVersion": 1, "version": 4, "applied": [2, 3, 4] }
+{ "previousVersion": 1, "version": 5, "applied": [2, 3, 4, 5] }
 ```
 
 If the project is already at the latest schema version, it safely returns
-`{ previousVersion: 4, version: 4, applied: [] }` and synchronizes the control
+`{ previousVersion: 5, version: 5, applied: [] }` and synchronizes the control
 cache if it was stale.
 
 If an inconsistent state is detected (e.g., missing version gaps or future
@@ -137,6 +137,32 @@ Provisioning applies every version to a brand-new database automatically
 at the latest version while an existing one stays where it was until `schema/apply`
 runs. **This asymmetry is intentional** and is the reason a new column must never
 be required by the Worker before every live project has been migrated.
+
+### Project schema v5 (CP-04 query indexes)
+
+v5 is the model for a **zero-risk** project migration: three
+`CREATE INDEX IF NOT EXISTS` statements on `mb_records` and the version record.
+There is no `ALTER TABLE`, no generated column, no `NOT NULL`, and no row is
+read or rewritten, so a populated project database upgrades as a pure metadata
+operation and every existing record is preserved byte for byte. Replaying v5 is
+a no-op.
+
+Because v5 adds no column, the Worker never depends on it for correctness: a
+tenant still on v4 keeps serving every CP-04 query, just without the index —
+same results, more rows scanned. That is what makes the rollout uncoordinated
+and safe, unlike the CP-06 v5-style change that was deferred precisely because
+it would have added a column.
+
+`src/query-index.test.ts` proves both halves against real SQLite: a v4 database
+holding documents is upgraded to v5 and every row compares equal before and
+after, and each supported query's `EXPLAIN QUERY PLAN` names the index it is
+supposed to use.
+
+**Not applied to any remote or production D1 by this checkpoint.** Rolling v5
+out to a live tenant — including `interactive-kp` — is an explicit, separate
+operational step: run `POST /v1/projects/{projectId}/schema/apply` per project
+and confirm with `/schema/verify`. Until then those tenants stay on v4 and
+continue to work.
 
 ## Supabase migration packages
 
