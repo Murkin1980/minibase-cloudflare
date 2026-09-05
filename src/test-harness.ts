@@ -14,8 +14,9 @@ import { sha256 } from "./security";
  * below is a minimal model of the exact statement MiniBase sends, so these tests
  * verify MiniBase's own routing, parameter binding, cursor arithmetic, page
  * slicing, isolation prefixing, and audit writes — not SQLite's query planner.
- * Statements that depend on a real engine are covered against real D1 by
- * `scripts/test-d1.mjs`.
+ * Statements that depend on a real engine are covered against real D1/SQLite by
+ * `scripts/test-d1.mjs`, `src/query-index.test.ts`, and
+ * `src/commands.integration.test.ts`.
  */
 
 export interface HarnessProject {
@@ -28,6 +29,13 @@ export interface HarnessProject {
   dataSchemaVersion?: number;
   schemaVersions?: number[];
   hasSchemaVersionsTable?: boolean;
+  /**
+   * CP-05 partial-v6-migration fixtures. In production the v6 table, trigger,
+   * and authoritative version row are installed in that order. These switches
+   * let route tests prove that an incomplete installation fails closed.
+   */
+  commandTablePresent?: boolean;
+  commandTriggerPresent?: boolean;
   /** CP-03 stored per-project quotas. Omitted means NULL, i.e. inherit the deployment ceiling. */
   quotas?: Partial<Record<QuotaKey, number | null>>;
 }
@@ -63,6 +71,11 @@ export interface HarnessOptions {
   rateLimitDeniedProjects?: string[];
   /** CP-03: the deployment demands a resolvable limiter (fail-closed switch). */
   rateLimiterRequired?: boolean;
+  /**
+   * Simulates an outbound project-D1 transport failure before SQLite receives
+   * the statement. Used to prove a failed transport cannot create a marker.
+   */
+  failProjectD1Requests?: number;
 }
 
 /** One observed rate-limit consultation, with the binding that served it. */
@@ -82,6 +95,19 @@ export interface FileMeta {
   size: number;
   contentType: string;
   etag: string;
+}
+
+/** CP-05 persisted marker, keyed by command type + SHA-256 idempotency key. */
+export interface HarnessCommandRow {
+  command_id: string;
+  command_type: string;
+  idempotency_key_hash: string;
+  request_fingerprint: string;
+  normalized_payload: string;
+  response_json: string;
+  status: string;
+  created_at: string;
+  completed_at: string;
 }
 
 export interface AuditRow {
@@ -125,6 +151,8 @@ function storedQuotas(quotas: HarnessProject["quotas"]): StoredQuotas {
 export interface HarnessSchemaState {
   hasTable: boolean;
   versions: number[];
+  commandTablePresent: boolean;
+  commandTriggerPresent: boolean;
 }
 
 export interface Harness {
@@ -132,6 +160,10 @@ export interface Harness {
   audit: AuditRow[];
   /** database id -> collection -> record id -> row */
   records: Map<string, Map<string, Map<string, RecordRow>>>;
+  /** database id -> command type/key-hash -> persisted marker */
+  commands: Map<string, Map<string, HarnessCommandRow>>;
+  /** database id -> collection/id -> number of trigger-applied record mutations */
+  commandMutations: Map<string, Map<string, number>>;
   /** database id -> path -> metadata */
   files: Map<string, Map<string, FileMeta>>;
   /** database id -> schema state */
@@ -235,6 +267,8 @@ function selectRecords(
 export function createHarness(options: HarnessOptions = {}): Harness {
   const projects = options.projects ?? [];
   const records = new Map<string, Map<string, Map<string, RecordRow>>>();
+  const commands = new Map<string, Map<string, HarnessCommandRow>>();
+  const commandMutations = new Map<string, Map<string, number>>();
   const files = new Map<string, Map<string, FileMeta>>();
   const schemaStore = new Map<string, HarnessSchemaState>();
   const projectRows = new Map<string, HarnessProjectRow>();
@@ -246,7 +280,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const rateLimitCalls: HarnessRateLimitCall[] = [];
 
   for (const project of projects) {
+    const schemaVersions = project.schemaVersions ? [...project.schemaVersions] : [1, 2, 3, 4, 5, 6];
+    const hasCommandV6 = schemaVersions.includes(6);
     records.set(project.databaseId, new Map());
+    commands.set(project.databaseId, new Map());
+    commandMutations.set(project.databaseId, new Map());
     files.set(project.databaseId, new Map());
     projectRows.set(project.projectId, {
       id: project.projectId,
@@ -254,13 +292,15 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       name: project.name ?? project.slug,
       status: project.status ?? "active",
       d1_database_id: project.databaseId,
-      data_schema_version: project.dataSchemaVersion ?? 5,
+      data_schema_version: project.dataSchemaVersion ?? 6,
       origins: project.origins ?? [],
       ...storedQuotas(project.quotas),
     });
     schemaStore.set(project.databaseId, {
       hasTable: project.hasSchemaVersionsTable !== false,
-      versions: project.schemaVersions ? [...project.schemaVersions] : [1, 2, 3, 4, 5],
+      versions: schemaVersions,
+      commandTablePresent: project.commandTablePresent ?? hasCommandV6,
+      commandTriggerPresent: project.commandTriggerPresent ?? hasCommandV6,
     });
   }
 
@@ -426,10 +466,11 @@ export function createHarness(options: HarnessOptions = {}): Harness {
 
   function executeProjectSql(databaseId: string, sql: string, params: unknown[]) {
     const store = records.get(databaseId);
+    const commandStore = commands.get(databaseId);
+    const mutationStore = commandMutations.get(databaseId);
     const fileStore = files.get(databaseId);
     const schema = schemaStore.get(databaseId);
-    if (!store || !fileStore) return null;
-    d1Calls.push({ databaseId, sql, params });
+    if (!store || !commandStore || !mutationStore || !fileStore) return null;
     const flat = sql.replace(/\s+/g, " ");
 
     if (flat.includes("FROM sqlite_master WHERE type = 'table' AND name = 'mb_schema_versions'")) {
@@ -462,8 +503,118 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       }
       return { results: [], success: true };
     }
+    if (flat.includes("CREATE TABLE IF NOT EXISTS mb_commands")) {
+      if (schema) schema.commandTablePresent = true;
+      return { results: [], success: true };
+    }
+    if (flat.includes("CREATE TRIGGER IF NOT EXISTS mb_commands_records_upsert_many_apply")) {
+      if (schema) schema.commandTriggerPresent = true;
+      return { results: [], success: true };
+    }
     if (flat.startsWith("CREATE TABLE IF NOT EXISTS") || flat.startsWith("CREATE INDEX IF NOT EXISTS")) {
       return { results: [], success: true };
+    }
+    if (flat.startsWith("INSERT INTO mb_commands")) {
+      // The exact v6 statement contains the authoritative version and trigger
+      // checks in its SELECT. A missing table would make SQLite reject the SQL;
+      // an incomplete installation with the table but no trigger/version selects
+      // no row and therefore cannot create a command marker.
+      if (!schema?.hasTable || !schema.commandTablePresent) return null;
+      if (!schema.commandTriggerPresent || !schema.versions.includes(6)) {
+        return { results: [], success: true };
+      }
+      const [
+        commandId,
+        commandType,
+        idempotencyKeyHash,
+        requestFingerprint,
+        normalizedPayload,
+        responseJson,
+        status,
+        createdAt,
+        completedAt,
+      ] = params;
+      if (
+        typeof commandId !== "string" || typeof commandType !== "string" ||
+        typeof idempotencyKeyHash !== "string" || typeof requestFingerprint !== "string" ||
+        typeof normalizedPayload !== "string" || typeof responseJson !== "string" ||
+        typeof status !== "string" || typeof createdAt !== "string" || typeof completedAt !== "string"
+      ) {
+        return null;
+      }
+      const key = `${commandType}\u0000${idempotencyKeyHash}`;
+      const existing = commandStore.get(key);
+      if (existing) {
+        return {
+          results: [{
+            command_id: existing.command_id,
+            request_fingerprint: existing.request_fingerprint,
+            response_json: existing.response_json,
+            status: existing.status,
+          }],
+          success: true,
+        };
+      }
+
+      // The route parser has already validated this canonical payload. Validate
+      // the minimal trigger shape before making any modelled mutation so the
+      // harness preserves SQLite's all-or-nothing statement behaviour.
+      let operations: Array<{ collection: string; id: string; data: Record<string, unknown> }>;
+      try {
+        const payload = JSON.parse(normalizedPayload) as { operations?: unknown };
+        if (!Array.isArray(payload.operations) || payload.operations.length < 1 || payload.operations.length > 1000) {
+          return null;
+        }
+        operations = payload.operations.map((operation) => {
+          if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("invalid operation");
+          const candidate = operation as Record<string, unknown>;
+          if (typeof candidate.collection !== "string" || typeof candidate.id !== "string" ||
+            !candidate.data || typeof candidate.data !== "object" || Array.isArray(candidate.data)) {
+            throw new Error("invalid operation");
+          }
+          return {
+            collection: candidate.collection,
+            id: candidate.id,
+            data: candidate.data as Record<string, unknown>,
+          };
+        });
+      } catch {
+        return null;
+      }
+
+      for (const operation of operations) {
+        const existingRecord = store.get(operation.collection)?.get(operation.id);
+        if (!store.has(operation.collection)) store.set(operation.collection, new Map());
+        store.get(operation.collection)!.set(operation.id, {
+          id: operation.id,
+          data: JSON.stringify(operation.data),
+          created_at: existingRecord?.created_at ?? createdAt,
+          updated_at: completedAt,
+        });
+        const target = `${operation.collection}\u0000${operation.id}`;
+        mutationStore.set(target, (mutationStore.get(target) ?? 0) + 1);
+      }
+      const stored: HarnessCommandRow = {
+        command_id: commandId,
+        command_type: commandType,
+        idempotency_key_hash: idempotencyKeyHash,
+        request_fingerprint: requestFingerprint,
+        normalized_payload: normalizedPayload,
+        response_json: responseJson,
+        status,
+        created_at: createdAt,
+        completed_at: completedAt,
+      };
+      commandStore.set(key, stored);
+      return {
+        results: [{
+          command_id: stored.command_id,
+          request_fingerprint: stored.request_fingerprint,
+          response_json: stored.response_json,
+          status: stored.status,
+        }],
+        success: true,
+      };
     }
     if (flat.includes("DELETE FROM mb_records")) {
       const [collection, id] = params as [string, string];
@@ -606,11 +757,20 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   };
 
   const originalFetch = globalThis.fetch;
+  let projectD1FailuresRemaining = options.failProjectD1Requests ?? 0;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const match = D1_QUERY.exec(url);
     if (!match) return originalFetch(input as string, init);
     const payload = JSON.parse(String(init?.body ?? "{}")) as { sql: string; params: unknown[] };
+    // `d1Calls` counts actual outbound REST attempts, including failures before
+    // SQLite sees a statement. This is the metric command tests use for the
+    // one-round-trip contract.
+    d1Calls.push({ databaseId: match[2], sql: payload.sql, params: payload.params ?? [] });
+    if (projectD1FailuresRemaining > 0) {
+      projectD1FailuresRemaining -= 1;
+      return Response.json({ success: false, errors: [{ message: "transport failed" }] }, { status: 503 });
+    }
     const result = executeProjectSql(match[2], payload.sql, payload.params ?? []);
     if (!result) {
       return Response.json({ success: false, errors: [{ message: "unknown database" }] }, { status: 404 });
@@ -633,6 +793,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     env,
     audit,
     records,
+    commands,
+    commandMutations,
     files,
     schemaStore,
     projectRows,

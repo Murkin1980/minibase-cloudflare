@@ -20,6 +20,8 @@ describe("project CORS policy", () => {
     const request = new Request("https://api.test/v1/data/x", { headers: { origin: "https://app.test" } });
     const response = addCorsHeaders(Response.json({ ok: true }), request);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://app.test");
+    expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(response.headers.get("access-control-allow-headers")).toContain("idempotency-key");
     expect(preflightResponse(request).status).toBe(204);
   });
 });

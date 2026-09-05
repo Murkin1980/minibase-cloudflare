@@ -12,6 +12,129 @@ Every route is versioned under `/v1`. There is no unversioned surface.
 Publishable and secret keys are sent as Bearer tokens. The control plane stores
 only their SHA-256 hashes.
 
+## Commands (CP-05)
+
+CP-05 adds exactly one server-side command; it is **not** a generic batch or SQL
+endpoint:
+
+```http
+POST /v1/commands/records:upsert-many
+Authorization: Bearer mb_secret_...
+Content-Type: application/json
+Idempotency-Key: opaque-client-key
+
+{
+  "operations": [
+    { "collection": "tasks", "id": "task-123", "data": { "schemaVersion": 1, "status": "created" } },
+    { "collection": "task_events", "id": "event-456", "data": { "schemaVersion": 1, "taskId": "task-123" } }
+  ]
+}
+```
+
+A command atomically upserts **1 through the effective project
+`maxBulkRecords`** distinct `(collection, id)` targets. `collection`, `id`, and
+`data` use the same safe data shapes as the records API; command collections may
+not begin with the internal `mb_` prefix. The body has exactly one field,
+`operations`, and each operation has exactly `collection`, `id`, and `data`.
+There is no `projectId`, database ID, SQL, SQL fragment, table name, or arbitrary
+operation selector in the request.
+
+Only a trusted `mb_secret_*` key with `data:write` (or its secret-key
+`project:admin` scope) may execute the command. A publishable key is refused,
+even if a malformed legacy control-plane row were to give it a write scope.
+The authenticated key determines the project; commands never accept a tenant
+address from the caller.
+
+### Response and idempotency
+
+`Idempotency-Key` is required, opaque, and limited to 100 characters. MiniBase
+never returns it, logs it, or persists its raw value. The project D1 stores only
+its SHA-256 digest, unique with the static command type inside that project's
+own database.
+
+A new command returns 200:
+
+```json
+{
+  "commandId": "b5b9425b-7cf7-48bc-a039-6fdcd58a7e3d",
+  "status": "applied",
+  "operationCount": 2,
+  "records": [
+    { "collection": "tasks", "id": "task-123" },
+    { "collection": "task_events", "id": "event-456" }
+  ],
+  "replayed": false
+}
+```
+
+MiniBase canonicalizes JSON object-member order before fingerprinting. A retry
+with the same key and the same normalized payload returns the persisted logical
+response, the original `commandId`, and `"replayed": true`; it does **not**
+write target records again or change their timestamps. Operation-array order is
+intentional and remains part of the payload identity. A retry using the same key
+with a different normalized payload receives the opaque response:
+
+```http
+HTTP/1.1 409 Conflict
+{ "error": { "code": "idempotency_conflict" } }
+```
+
+The error does not reveal the old payload, request fingerprint, command ID, or
+idempotency key. If a client loses a response or receives a transport error, it
+must retry the exact same normalized command with the same key; the persisted
+marker is the replay source of truth.
+
+### Atomic mechanism, schema readiness, and cost
+
+This is one parameterized project-D1 REST query for **every** fresh execution,
+matching replay, and conflicting retry. The query is one SQLite
+`INSERT … SELECT … ON CONFLICT … RETURNING` statement. It creates a v6
+`mb_commands` marker and a static v6 trigger expands the already-validated
+canonical JSON into `mb_records`. SQLite therefore commits all target upserts
+and the completed marker together, or aborts the whole statement. It is not a
+D1 REST `{batch}`, multiple SQL statements, a client-side rollback, sequential
+legacy `PUT`s, or a generic command DSL.
+
+The same statement checks the project database's authoritative
+`mb_schema_versions` v6 row and the static trigger before it can insert a
+marker. It does not make a schema-preflight request and does not consult
+`projects.data_schema_version` for command readiness. An incomplete v6
+installation that still has `mb_commands` but lacks the version row or trigger
+returns 409 `command_schema_not_ready` with no target mutation. If the command
+table itself is absent, MiniBase cannot safely distinguish that database error
+from a Cloudflare transport error and returns the existing generic 502
+`cloudflare_api_error`; it never falls back to legacy writes.
+
+Run `GET /v1/projects/{projectId}/schema/verify` and owner-approved
+`POST /v1/projects/{projectId}/schema/apply` before enabling this endpoint for an
+existing project. CP-05 does **not** apply remote schema changes itself.
+
+### Command errors
+
+| Condition | HTTP | `error.code` |
+| --- | ---: | --- |
+| Missing, empty, or over-100-character key | 400 | `invalid_idempotency_key` |
+| Empty/malformed body, unknown field, duplicate target | 400 | `invalid_command` |
+| More operations than effective `maxBulkRecords` | 400 | `bulk_limit_exceeded` |
+| Bad/internal collection, record ID, or data object | 400 | `invalid_collection`, `invalid_record_id`, `invalid_record_data` |
+| Same key, different normalized payload | 409 | `idempotency_conflict` |
+| v6 marker/trigger/version readiness is provably incomplete | 409 | `command_schema_not_ready` |
+| Cloudflare/D1 transport or an indistinguishable absent table | 502 | `cloudflare_api_error` |
+
+The normal data-plane origin allowlist, deployment and per-project quotas,
+credential/IP/project rate controls, tenant isolation, error hardening, and
+`/v1` versioning apply unchanged.
+
+### Legacy writes remain available
+
+`PUT /v1/data/{collection}/{id}` and `DELETE /v1/data/{collection}/{id}` remain
+unchanged and do **not** require `Idempotency-Key`. A repeated PUT is logically
+idempotent for the addressed document—the final `data` is the submitted value—
+but its server-managed `updatedAt` can advance on each call. A repeated DELETE
+is logically idempotent for the desired absent state and continues returning
+204. Use the CP-05 command when multiple records must share one atomic outcome
+and replayable response.
+
 ## Pagination
 
 Keyset pagination only. There is no `OFFSET`, because offset cost grows with
@@ -54,8 +177,9 @@ unbounded request.
 | `MB_MAX_BULK_RECORDS` | 500 | 1 000 |
 | `MB_KEY_ACTIVITY_INTERVAL_MS` | 300 000 | 3 600 000 |
 
-`MB_MAX_BULK_RECORDS` is reserved for the CP-05 command layer; nothing reads it
-yet. See `src/limits.ts`.
+`MB_MAX_BULK_RECORDS` is enforced by CP-05
+`POST /v1/commands/records:upsert-many`; the authenticated project's effective
+`maxBulkRecords` is the actual ceiling. See `src/limits.ts`.
 
 These are **deployment** ceilings. Each one can be tightened per project — see
 [Project quotas](#project-quotas) below and
@@ -213,8 +337,10 @@ never widen it.
 field — including `keyActivityIntervalMs`, which is not a tenant quota — is
 rejected with 400 `invalid_quota` rather than ignored.
 
-Exceeding a quota produces the code a consumer already handles, never a new one:
-413 `request_body_too_large`, 413 `file_too_large`, or 400 `invalid_limit`.
+Exceeding `maxJsonBytes`, `maxFileBytes`, or `maxPageSize` produces the existing
+code a consumer already handles: 413 `request_body_too_large`, 413
+`file_too_large`, or 400 `invalid_limit`. The CP-05 `maxBulkRecords` ceiling is
+command-specific and returns 400 `bulk_limit_exceeded`.
 
 Quotas cost no extra control-D1 statement: the columns ride along on the
 `api_keys JOIN projects` query that authenticates the key.

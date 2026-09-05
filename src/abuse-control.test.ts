@@ -64,6 +64,7 @@ describe("per-route rate periods", () => {
   it("classifies every route into one of the three existing classes", () => {
     expect(routeClass("/v1/data/lessons")).toBe("data");
     expect(routeClass("/v1/data/lessons/rec-1")).toBe("data");
+    expect(routeClass("/v1/commands/records:upsert-many")).toBe("data");
     expect(routeClass("/v1/files")).toBe("files");
     expect(routeClass("/v1/files/a/b.txt")).toBe("files");
     expect(routeClass("/v1/projects")).toBe("control");

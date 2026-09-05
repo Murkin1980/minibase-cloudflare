@@ -28,9 +28,10 @@ engine, or repository.
 | G8 | A malformed project context is **refused**, not repaired | `isSafeIdentity` at the single authentication choke point | `src/data-auth.ts` |
 | G9 | A caller cannot discover **whether a project exists** | Every project-context failure returns an identical 401 | `src/isolation.test.ts` |
 | G10 | A project can never **widen** a deployment ceiling | Tighten-only clamp, bounded by `HARD_LIMITS` | `resolveProjectQuota` |
+| G11 | A CP-05 command can mutate **only** the credential's project atomically | one credential-derived D1 target; static v6 marker/trigger statement | `src/commands.test.ts`, `src/commands.integration.test.ts` |
 
-Guarantees G1–G4 existed before CP-03 and are unchanged. CP-03 adds G5–G10 and
-proves all ten with tests.
+Guarantees G1–G4 existed before CP-03 and are unchanged. CP-03 adds G5–G10;
+CP-05 adds G11 without adding a tenant-addressing surface.
 
 ---
 
@@ -98,8 +99,8 @@ can be injected. Canonical UUIDs — everything MiniBase actually issues — alw
 satisfy it.
 
 The check lives in `dataKeyDenialReason`, the single choke point every data-plane
-request passes through, so both the Records API and the Files API are covered by
-one rule.
+request passes through, so the Records API, Files API, and CP-05 command route
+are covered by one rule.
 
 ### No project-existence leakage
 
@@ -162,7 +163,7 @@ widens anything.
 | `maxJsonBytes` | `projects.quota_max_json_bytes` | `MB_MAX_JSON_BYTES` | 1 MiB | `PUT /v1/data/...` body |
 | `maxFileBytes` | `projects.quota_max_file_bytes` | `MB_MAX_FILE_BYTES` | 100 MiB | `PUT /v1/files/...` body |
 | `maxPageSize` | `projects.quota_max_page_size` | `MB_MAX_PAGE_SIZE` | 500 | `?limit=` on every list route |
-| `maxBulkRecords` | `projects.quota_max_bulk_records` | `MB_MAX_BULK_RECORDS` | 1 000 | reserved for CP-05 |
+| `maxBulkRecords` | `projects.quota_max_bulk_records` | `MB_MAX_BULK_RECORDS` | 1 000 | `POST /v1/commands/records:upsert-many` operation count |
 
 `defaultPageSize` is derived, never stored: it is
 `min(deployment defaultPageSize, effective maxPageSize)`, so a page default can
@@ -174,18 +175,20 @@ it would raise the whole deployment's write volume — precisely the account-wid
 ceiling CP-01 removed. It is inherited unchanged and the quotas endpoint rejects
 it as an unknown field.
 
-### Error codes are unchanged
+### Error codes
 
-A quota never introduces a new error. Exceeding one produces the code a consumer
-already handles:
+The CP-03 dimensions retain their established error codes; CP-05 adds the
+command-specific bulk-limit result:
 
 | Quota exceeded | HTTP | `error.code` |
 | --- | --- | --- |
 | `maxJsonBytes` | 413 | `request_body_too_large` |
 | `maxFileBytes` | 413 | `file_too_large` |
 | `maxPageSize` | 400 | `invalid_limit` |
+| `maxBulkRecords` on `records:upsert-many` | 400 | `bulk_limit_exceeded` |
 
-A consumer written before CP-03 therefore needs **no error-handling change**.
+A consumer written before CP-03 needs no error-handling change for the original
+three dimensions. A CP-05 command consumer must handle `bulk_limit_exceeded`.
 
 ### Cost
 
@@ -306,9 +309,9 @@ invalidate, because the quota is read by the authentication query itself.
 | credential | `{route}:token:{sha256(bearer)}` | before auth | stop credential rotation bypassing the IP ceiling |
 | **project** (CP-03) | `{route}:project:{projectId}` | after auth | stop one tenant consuming shared capacity |
 
-Route classes are `control`, `data` (`/v1/data/…`), and `files` (`/v1/files…`).
-Every other path, including `/v1/projects`, `/v1/management-keys`, and
-`/v1/audit-events`, is `control`.
+Route classes are `control`, `data` (`/v1/data/…` and
+`/v1/commands/…`), and `files` (`/v1/files…`). Every other path, including
+`/v1/projects`, `/v1/management-keys`, and `/v1/audit-events`, is `control`.
 
 The project bucket is consulted **after** authentication and **before** the
 origin lookup — the origin lookup is itself a control-D1 read, so an exhausted
@@ -389,8 +392,9 @@ Integrating a new project against CP-03:
 4. **Read your quotas** (`GET /v1/projects/{id}/quotas`) and size the client
    against `effective`, not against the deployment defaults.
 5. Handle 413 `request_body_too_large`, 413 `file_too_large`, 400
-   `invalid_limit`, 429 `rate_limited`, 403 `origin_not_allowed`, and 503
-   `rate_limiter_unavailable`.
+   `invalid_limit` / `bulk_limit_exceeded`, 429 `rate_limited`, 403
+   `origin_not_allowed`, and 503 `rate_limiter_unavailable`. A command consumer
+   must also handle 409 `idempotency_conflict` and the v6 readiness response.
 6. On 429, back off. The bucket is per project per route class, so retrying the
    same route immediately will keep failing while another route may still work.
 7. Use `hasMore`, not `nextAfter !== null`, to decide whether to page on.
@@ -414,9 +418,9 @@ neither is accepted from a request.
 | Row-level end-user authorization | MiniBase has no end-user identity on the data plane | separate design |
 | A project schema version that adds a *column* | Would make the Worker write a column the live `interactive-kp` tenant does not have | CP-06 |
 
-Nothing in CP-03 replaces D1, R2, the Worker, or the existing API contract. No
-new project schema version is introduced, so a live tenant is unaffected until it
-chooses to set a quota.
+Nothing in CP-03 replaces D1, R2, the Worker, or the existing API contract.
+CP-05 later adds its own forward-only project schema v6 for the command marker;
+it does not change CP-03 quota behavior or apply a remote schema automatically.
 
 ---
 
@@ -444,3 +448,29 @@ Project schema v5 adds **indexes only** — no column — so a tenant that has n
 run `schema/apply` keeps serving every CP-04 query with identical results.
 `src/record-query.test.ts` covers the cross-project, injection, quota, and
 publishable-key cases directly.
+
+---
+
+## 10. CP-05 command isolation and atomicity
+
+`POST /v1/commands/records:upsert-many` is a data-plane route: it inherits the
+same pre-auth IP/credential limiter, post-auth `data:project:{projectId}` bucket,
+origin allowlist, effective `maxJsonBytes` / `maxBulkRecords`, hardened errors,
+and credential-derived database routing as legacy record writes. It accepts no
+project ID, database ID, collection SQL, or raw statement field.
+
+The route adds a defense-in-depth secret-kind gate after `data:write`
+authentication. A valid publishable key cannot invoke a command, including if a
+corrupted legacy row were to contain a write scope. A secret key with either
+`data:write` or `project:admin` is eligible; all cases still resolve exactly one
+project before the statement is sent.
+
+One parameterized SQLite statement reaches that project D1. It inserts a v6
+command marker and its static trigger applies all requested records, so a
+failure—including one after an earlier target would otherwise be processed—rolls
+back both targets and marker. A same-key matching retry reads the persisted
+winner without firing the trigger; a changed payload gets opaque 409
+`idempotency_conflict`. No REST batch, serial legacy `PUT`, client rollback, or
+cross-project retry is involved. The direct real-SQL proof is
+`src/commands.integration.test.ts`; HTTP routing, quota, isolation, and
+one-REST-request checks are in `src/commands.test.ts`.

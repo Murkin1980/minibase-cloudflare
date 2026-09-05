@@ -31,6 +31,16 @@ authorization: `data:write`, `files:write`, and `project:admin` require a
 backend-only `mb_secret_*` key. End-user writes require an authenticated,
 row-level authorization layer rather than broader publishable-key scopes.
 
+CP-05 `POST /v1/commands/records:upsert-many` has an additional route-level
+secret-kind check in addition to its `data:write` scope check: a malformed or
+legacy publishable-key row cannot gain command access. Its mandatory opaque
+`Idempotency-Key` is capped at 100 characters and is only bound as a value; the
+project marker stores a SHA-256 digest, never the raw header. The command has no
+caller-selected SQL, table name, project/database address, or generic operation
+field. One static v6 trigger reads fixed JSON paths from a validated canonical
+payload and atomically applies its records with the marker. See
+[`DATA_API.md`](DATA_API.md#commands-cp-05) for the replay/conflict contract.
+
 Denied management and data-plane authentication attempts are written to the
 control-D1 audit log with a reason and, when known, key/project IDs. Raw bearer
 tokens are never included. Successful data authentication updates `last_used_at`

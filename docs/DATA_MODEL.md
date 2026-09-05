@@ -89,6 +89,7 @@ statement `IF NOT EXISTS`.
 | 3 | `mb_migration_imports` (Supabase import bookkeeping) |
 | 4 | `mb_users`, `mb_activation_tokens`, `mb_organization_memberships`, `mb_sessions`, `mb_auth_audit_events` + indexes |
 | 5 | CP-04 query indexes on `mb_records` — **indexes only**, no table or column change |
+| 6 | CP-05 `mb_commands` marker table and `mb_commands_records_upsert_many_apply` static trigger |
 
 ### `mb_records`
 
@@ -139,6 +140,39 @@ a side effect of adding a query API.
 Indexes are added only for a query that exists. There is deliberately **no**
 generic index over arbitrary JSON fields.
 
+### `mb_commands` (project schema v6, CP-05)
+
+`mb_commands` is a per-project idempotency marker, not a cross-project control
+queue and not a generic workflow table. It contains one completed
+`records:upsert-many` command per `(command_type, idempotency_key_hash)`:
+
+```sql
+command_id          TEXT PRIMARY KEY,
+command_type        TEXT NOT NULL CHECK (command_type = 'records:upsert-many'),
+idempotency_key_hash TEXT NOT NULL, -- SHA-256 hex; raw header is never stored
+request_fingerprint TEXT NOT NULL,  -- SHA-256 of project + command type + canonical payload
+normalized_payload  TEXT NOT NULL,  -- validated canonical JSON
+response_json       TEXT NOT NULL,  -- persisted fresh-result source for replay
+status              TEXT NOT NULL CHECK (status = 'completed'),
+created_at          TEXT NOT NULL,
+completed_at        TEXT NOT NULL,
+UNIQUE (command_type, idempotency_key_hash)
+```
+
+The actual schema additionally checks 64-character lowercase hex hashes, valid
+JSON, an `operations` array length of 1…1000, and an object response. The static
+`AFTER INSERT` trigger validates fixed JSON paths and operation fields again,
+rejects duplicate targets and internal collection names, then upserts
+`mb_records`. It uses the marker's one command timestamp for every target's
+`updated_at` and retains an existing target's `created_at`. It fires only for a
+new marker; a conflict update returns the stored marker and cannot re-run record
+writes.
+
+This table is intentionally local to each project D1. The request fingerprint
+also includes `projectId`, but no key can reach another project database in the
+first place. Raw idempotency keys, bearer tokens, and command payloads are never
+placed in control-plane audit events.
+
 ### `mb_files`
 
 ```sql
@@ -153,7 +187,8 @@ updated_at   TEXT NOT NULL
 Metadata for objects in the shared R2 bucket under `{projectId}/{path}`. `size`
 is the number of bytes R2 actually received, not the client's `Content-Length`.
 A SHA-256 checksum, an explicit `uploaded_at`, and file→entity links are planned
-for CP-06 and need a project schema v5.
+for CP-06 and require a future forward project-schema version; they are not part
+of CP-05.
 
 ### Version bookkeeping
 

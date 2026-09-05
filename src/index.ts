@@ -1,4 +1,8 @@
 import { listAuditEvents, parseAuditQuery } from "./audit";
+import {
+  executeRecordsUpsertMany,
+  parseRecordsUpsertManyCommand,
+} from "./commands";
 import type { MiniBaseEnv } from "./contracts";
 import { addCorsHeaders, dataOriginIsAllowed, preflightResponse } from "./cors";
 import {
@@ -42,9 +46,9 @@ const application = {
     const url = new URL(request.url);
     const limits = resolveLimits(env);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.26.0" });
+      return json({ service: "minibase", status: "ok", version: "0.27.0" });
     }
-    if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
+    if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$)|commands(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
@@ -165,6 +169,36 @@ const application = {
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
         return json(await reconcileProjectFiles(env, reconcileMatch[1]));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/v1/commands/records:upsert-many") {
+      try {
+        // Commands are data-plane writes: the route ultimately requires a secret
+        // data key with data:write (or its project:admin scope). It accepts no
+        // tenant address; both projectId and databaseId remain credential-derived.
+        const principal = await authenticateDataKey(env, request, "data:write", correlationId, limits);
+        // Creation validation makes publishable keys read-only, but retain this
+        // route-level kind gate as defense in depth against a corrupt or legacy
+        // control-plane row. A project:admin scope is accepted only on a secret
+        // key; browser-held publishable credentials never gain command access.
+        if (!principal || principal.kind !== "secret") return errorResponse(new Error("unauthorized"));
+        const projectRate = await inspectProjectRequest(env, "data", principal.projectId);
+        if (projectRate === "unavailable") return errorResponse(new Error("rate_limiter_unavailable"));
+        if (projectRate === "denied") return errorResponse(new Error("rate_limited"));
+        if (!await dataOriginIsAllowed(env, principal.projectId, request)) {
+          return errorResponse(new Error("origin_not_allowed"));
+        }
+        const idempotencyKey = parseIdempotencyKey(request.headers.get("idempotency-key"));
+        const input = parseRecordsUpsertManyCommand(
+          await readJsonBounded(request, principal.limits.maxJsonBytes),
+          principal.limits.maxBulkRecords,
+        );
+        return addCorsHeaders(
+          json(await executeRecordsUpsertMany(env, principal, idempotencyKey, input)),
+          request,
+        );
       } catch (error) {
         return errorResponse(error);
       }

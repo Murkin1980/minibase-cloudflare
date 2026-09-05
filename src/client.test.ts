@@ -3,10 +3,32 @@ import {
   filterOperators,
   MiniBaseClient,
   MiniBaseClientError,
+  MiniBaseSecretClient,
+  type MiniBaseSecretClientOptions,
   orderFieldNames,
   selectFieldNames,
 } from "./client";
 import { recordQueryContract } from "./record-query";
+
+// Compile-time capability boundary: callers with the ordinary/public client
+// cannot discover the command member, and a publishable-shaped key cannot
+// construct the secret command client options. This helper is intentionally not
+// called; `npm run typecheck` verifies the two expected errors.
+function assertCommandClientTypeBoundary(): void {
+  const publishableClient = new MiniBaseClient({
+    baseUrl: "https://minibase.example",
+    key: "mb_publishable_browser-only",
+  });
+  // @ts-expect-error commands are deliberately absent from MiniBaseClient
+  publishableClient.upsertMany([], "key");
+  const invalidSecretOptions: MiniBaseSecretClientOptions = {
+    baseUrl: "https://minibase.example",
+    // @ts-expect-error only mb_secret_* key strings satisfy this option shape
+    key: "mb_publishable_browser-only",
+  };
+  void invalidSecretOptions;
+}
+void assertCommandClientTypeBoundary;
 
 describe("MiniBase client", () => {
   it("sends an authenticated encoded records request", async () => {
@@ -61,6 +83,51 @@ describe("MiniBase client", () => {
       body: '{"title":"A"}',
       headers: expect.objectContaining({ "content-type": "application/json" }),
     }));
+  });
+
+  it("keeps records:upsert-many on the explicit secret-only server-side client", async () => {
+    const requestFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      commandId: "command-123",
+      status: "applied",
+      operationCount: 2,
+      records: [{ collection: "tasks", id: "task-1" }, { collection: "task_events", id: "event-1" }],
+      replayed: false,
+    }));
+    const client = new MiniBaseSecretClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_secret_server-only",
+      fetch: requestFetch,
+    });
+    await expect(client.upsertMany([
+      { collection: "tasks", id: "task-1", data: { status: "created" } },
+      { collection: "task_events", id: "event-1", data: { taskId: "task-1" } },
+    ], "command-key")).resolves.toEqual(expect.objectContaining({ replayed: false }));
+    expect(requestFetch).toHaveBeenCalledWith(
+      "https://minibase.example/v1/commands/records:upsert-many",
+      expect.objectContaining({
+        method: "POST",
+        body: '{"operations":[{"collection":"tasks","id":"task-1","data":{"status":"created"}},{"collection":"task_events","id":"event-1","data":{"taskId":"task-1"}}]}',
+        headers: expect.objectContaining({
+          authorization: "Bearer mb_secret_server-only",
+          "content-type": "application/json",
+          "idempotency-key": "command-key",
+        }),
+      }),
+    );
+
+    expect(() => client.upsertMany([], "command-key")).toThrow("invalid_command");
+    expect(() => client.upsertMany([
+      { collection: "tasks", id: "task-1", data: {} },
+      { collection: "tasks", id: "task-1", data: {} },
+    ], "command-key")).toThrow("invalid_command");
+    expect(() => client.upsertMany([{ collection: "mb_commands", id: "marker", data: {} }], "command-key"))
+      .toThrow("invalid_collection");
+    expect(() => client.upsertMany([{ collection: "tasks", id: "task-2", data: {} }], ""))
+      .toThrow("invalid_idempotency_key");
+    expect(() => new MiniBaseSecretClient({
+      baseUrl: "https://minibase.example",
+      key: "mb_publishable_not-secret" as never,
+    })).toThrow("invalid_secret_client_key");
   });
 
   it("rejects management keys, insecure origins, unsafe paths, and API errors", async () => {

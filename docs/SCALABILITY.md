@@ -4,8 +4,9 @@ Decision: **EXTEND_EXISTING**. MiniBase stays one Worker, one control D1, one
 shared R2 bucket, and one D1 per project. No new repository, database engine, or
 backend.
 
-Audit date: 2026-09-03. Every claim below was read from the code at commit
-`4b5b987` or measured by running it, not taken from the README.
+Baseline audit date: 2026-09-03. CP-05 implementation and evidence were updated
+on 2026-09-05; the historical observations below are retained where useful, but
+the current-state rows call out later completed checkpoints.
 
 ---
 
@@ -32,7 +33,8 @@ Audit date: 2026-09-03. Every claim below was read from the code at commit
                     │                                           │
                     │  data plane      /v1/data/{collection}    │
                     │  (mb_publishable_*  /v1/files/{path}      │
-                    │   mb_secret_*)                            │
+                    │   mb_secret_*)     /v1/commands/...       │
+                    │                    (secret only)           │
                     └──┬──────────────────┬─────────────────┬───┘
                        │ binding          │ HTTPS           │ binding
                 ┌──────▼──────┐   ┌───────▼────────┐  ┌─────▼──────┐
@@ -45,6 +47,7 @@ Audit date: 2026-09-03. Every claim below was read from the code at commit
                 │ audit_events│   ┌───────▼────────┐
                 │ proj_origins│   │ project D1 × N │
                 └─────────────┘   │ mb_records     │
+                                  │ mb_commands    │
                                   │ mb_files       │
                                   │ mb_users, …    │
                                   └────────────────┘
@@ -58,13 +61,14 @@ Key facts verified in code:
 | Project isolation | One D1 per project. The database UUID is resolved **only** from the key hash (`src/data-auth.ts`); no request can supply it. R2 objects are prefixed `{projectId}/` (`projectObjectKey`, `src/files-api.ts`). |
 | Records model | A single generic document table `mb_records (collection, id, data JSON, created_at, updated_at)`, PK `(collection, id)`. Not relational. |
 | Data plane transport | Cloudflare **D1 REST API**, not a binding — a deliberate, documented trade-off (ADR-0001). Workers for Platforms is paid and out of scope. |
-| Migrations | Control DB: numbered SQL applied by Wrangler (`migrations/0001`–`0007`). Project DB: in-code `projectSchemaMigrations` v1–v4 with a version record in **two** places. |
-| Transactions | Control plane uses `CONTROL_DB.batch()` (atomic). Data plane sends **one statement per HTTP call** — no multi-statement atomicity. |
-| Idempotency | `POST /v1/projects` requires `Idempotency-Key` bound to a request fingerprint. Data-plane writes have none (PUT is naturally idempotent by ID). |
+| CP-05 commands | One exact `POST /v1/commands/records:upsert-many`, secret-only, validates a closed payload and uses one `{sql, params}` REST request for fresh/replay/conflict. No generic batch/SQL endpoint exists. |
+| Migrations | Control DB: numbered SQL applied by Wrangler (`migrations/0001`–`0008`). Project DB: in-code `projectSchemaMigrations` v1–v6; project-local `mb_schema_versions` is authoritative and `projects.data_schema_version` is only a cache. |
+| Transactions | Control plane uses `CONTROL_DB.batch()` (atomic). CP-05 data commands use one parameterized SQLite statement plus a static v6 trigger—marker and all targets share one statement boundary. No REST batch semantics are assumed. |
+| Idempotency | `POST /v1/projects` and CP-05 `records:upsert-many` require `Idempotency-Key` bound to a request fingerprint. The command stores only the SHA-256 key digest and replays its persisted result; legacy PUT/DELETE keep their documented logical semantics. |
 | Audit | `audit_events` in the control D1, append-only, control-plane actions only. Data-plane CRUD is intentionally not audited. |
 | Auth | SHA-256 hash lookup; scopes stored as CSV; `project:admin` implies all data scopes. |
 | Supabase tooling | `migration-manifest` / `-import` / `-verification` / `-rollback` / `postgres-sqlite` / `auth-migration` exist and are tested, but **no HTTP route reaches them**. Library-only. |
-| Tests at audit time | 61 vitest tests + D1 + worker + release scripts. **No test exercised `src/index.ts` routing.** |
+| Tests | Route/harness tests exercise `src/index.ts`; `src/commands.integration.test.ts` runs real Miniflare D1/SQLite trigger, failure, replay, and concurrent-race evidence. The release gate runs the full suite. |
 
 ### Measured cost of one request
 
@@ -74,6 +78,7 @@ Counted by instrumenting the real handler (not estimated):
 | --- | --- | --- |
 | `GET /v1/data/{c}` with `Origin` | 3 (1 key read, 1 `last_used_at` write, 1 origin read) | 1 |
 | `GET /v1/data/{c}` without `Origin` | 2 | 1 |
+| `POST /v1/commands/records:upsert-many` without `Origin` | 2 | 1 for execute, replay, or conflict |
 | denied data auth | 2 (1 key read + 1 audit insert) | 0 |
 
 The `last_used_at` write is **the** structural cost: it made every authenticated
@@ -86,14 +91,14 @@ data request consume one control-plane write row, shared by all projects.
 | Area | Current | Problem / risk | Needed for future | Priority |
 | --- | --- | --- | --- | --- |
 | **A. Multi-project isolation** | One D1 per project; DB UUID resolved from key hash only; R2 prefix `{projectId}/` | Isolation was correct but **untested end-to-end**; a regression in routing would be silent. Both interpolated identities were unvalidated, so a corrupted control row could redirect the REST path or escape the R2 prefix | Regression tests proving A cannot read/write/list B's records or objects; an identity guard; per-project quotas and rate buckets | **P0 — tests in CP-01; quotas, buckets, and fail-closed identity guard in CP-03** |
-| **B. Schema management** | Control: numbered SQL + Wrangler `d1_migrations`. Project: in-code v1–v4, `IF NOT EXISTS`, forward-only | Project `mb_schema_versions` is authoritative; verification endpoint reports drift; forward-only policy | Single source of truth + verify endpoint + regression tests | **P1 — done in CP-02** |
+| **B. Schema management** | Control: numbered SQL + Wrangler `d1_migrations`. Project: in-code v1–v6, `IF NOT EXISTS`, forward-only | Project `mb_schema_versions` is authoritative; verification endpoint reports drift; forward-only policy | Single source of truth + verify endpoint + migration regression tests | **P1 — done in CP-02; v6 added in CP-05** |
 | **C. Relational data** | `mb_records` document store. Project schema v4 does use real FKs (`mb_users` → `mb_sessions` etc.) but the data API cannot express them | No FKs, joins, or referential integrity reachable through the API. `customers→projects→orders→tasks→artifacts` is not modelable today | Typed collections with declared FKs, or keep documents and add explicit link records — **decide only when a real project needs it** | P2 (CP-04) |
 | **D. Query API** | CP-04: allowlisted `filter[...]`, `order=field.asc|desc`, `select=...`, opaque keyset cursor per order; still one D1 REST call per page and no `OFFSET` | Before CP-04 there was **no filtering, sorting, or field selection**: any query other than "by id" needed a full collection scan, and `nextAfter` on short final pages left consumers unable to tell when to stop | Filtering on indexed fields; explicit `order`; `hasMore` | **P0 — `hasMore` done in CP-01; filtering/sorting/selection done in CP-04** |
 | **E. Index strategy** | CP-04: PK `(collection, id)` plus schema v5 composites on `created_at`, `updated_at`, and `json_extract(data,'$.schemaVersion')`, each ending in `id`; every supported query asserted against `EXPLAIN QUERY PLAN` | Before CP-04 the list query ordered by `id` only, so the v1 `(collection, updated_at DESC)` index was never used, and there was no index story for JSON fields | Rule kept: index only confirmed hot paths | **P1 — done in CP-04** |
-| **F. Transactions** | Control plane: `batch()` is atomic. Data plane: `queryProjectD1` posts one `{sql, params}` — a single parameterized statement — and nothing in the codebase sends more than one statement per request | `create order + tasks + event` cannot be atomic today. Whether the REST endpoint accepts a batch is **unverified** and must not be assumed | Server-side commands. A single `INSERT` with multiple `VALUES` tuples is one SQLite statement and therefore atomic; whether that shape survives `queryProjectD1` is to be proven in CP-05, not assumed | P1 (CP-05) |
-| **G. Idempotency** | Provisioning only (`Idempotency-Key` + request fingerprint) | Imports, bulk writes, webhooks and background jobs would duplicate on retry | One reusable primitive, applied to every write command | **P0 — primitive extracted in CP-01**; wiring P1 (CP-05) |
+| **F. Transactions** | Control plane: `batch()` is atomic. CP-05 data plane: one `{sql, params}` request carries one `INSERT … SELECT … ON CONFLICT … RETURNING`; the static v6 trigger writes all targets | D1 REST batch/multiple-statement rollback is not assumed or used. Atomicity depends on the one SQLite statement and must retain its real-SQL proof | Keep commands closed and static; any new command needs equivalent one-statement evidence before release | **P1 — done in CP-05** |
+| **G. Idempotency** | Provisioning and CP-05 command use the shared `Idempotency-Key` / request-fingerprint primitive | Legacy single-record PUT has only logical final-state idempotency; imports, webhooks, and future jobs remain outside this command | Persisted command response is the replay source; apply the primitive only to scoped future write commands | **P0 — primitive CP-01; command wiring done in CP-05** |
 | **H. Audit log** | `audit_events`: project, action, outcome, actor, metadata, timestamp | No `entity` / `entity_id`, and **no correlation to the request** — `x-minibase-request-id` was returned to the caller but stored nowhere, so a support request could not be traced. Unbounded growth; a denied-auth storm writes one row each | `entity`, `entity_id`, `correlation_id`; retention policy | **P0 — contract done in CP-01**; retention P2 (CP-07) |
-| **I. Files / R2** | Project-prefixed keys, path allowlist, `mb_files` metadata, `etag`, reconcile endpoint | Stored `size` came from the **client-declared `Content-Length`**, not measured bytes. No SHA-256 checksum. No file→entity relation. `content-length` on download came from metadata, which can be stale | Measured size (done), checksum + `uploaded_at` + entity link (needs project schema v5) | **P0 — measured size done in CP-01**; rest P2 (CP-06) |
+| **I. Files / R2** | Project-prefixed keys, path allowlist, `mb_files` metadata, `etag`, reconcile endpoint | No SHA-256 checksum, file→entity relation, or immutable-original model | Measured size (done); checksum + `uploaded_at` + entity link need a future forward project schema version | **P0 — measured size done in CP-01**; rest P2 (CP-06) |
 | **J. Backup / restore** | D1 bookmark + R2 manifest appear only inside `migration-rollback.ts` as a rollback *plan* shape | No documented backup or restore procedure for normal operation, only for Supabase migrations | `docs/BACKUP_RESTORE.md` using free D1 export/PITR + R2 listing. No paid backup service | **P0 — documented in CP-01** |
 | **K. Observability** | `observability.enabled: true`; request IDs on every response | No D1/R2 operation counts, no records/storage counts, no rate-limit event metric. Nothing tells the owner a quota is approaching | Cloudflare-native dashboards + a cheap `/v1/metrics`-style readout. Free tier only | P2 (CP-07) |
 | **L. API versioning** | `/v1/...` everywhere | **None — already solved.** The audit brief assumed this might be missing; it is not | Nothing. Add `/v2` only when a breaking change is unavoidable | — |
@@ -121,15 +126,18 @@ data request consume one control-plane write row, shared by all projects.
    is consulted before the origin lookup, so a tenant that exhausts its ceiling
    stops spending control-plane capacity at that point. The structural coupling
    itself remains and is CP-10's measurement subject.*
-3. **The query API cannot express a real query.** No filter, no sort, no field
-   selection, and the one secondary index is never used by the list query. Any
-   project that grows past "fetch by id" will hit full-collection scans over the
-   REST API — one HTTP round trip each.
-4. **No atomic multi-record write.** Anything that must create an order, its
-   tasks, and an event together cannot be made safe today.
-5. **Project schema version has two sources of truth** that can silently
-   diverge, and applying a version is a sequence of independent REST calls with
-   no verification.
+3. **The query API remains deliberately closed.** CP-04 provides only indexed
+   filters, explicit ordering, and field selection; arbitrary JSON filtering,
+   joins, full-text search, and analytics still do not exist. A new query shape
+   needs a measured index plan before it expands this surface.
+4. **Atomic multi-record writes are command-scoped.** CP-05 safely covers its
+   one `records:upsert-many` command, but imports, webhooks, and any future
+   multi-entity workflow must not imitate it with serial REST calls; each needs
+   a separately reviewed atomic mechanism and replay contract.
+5. **Project schema state is authoritative only in project D1.** CP-02 resolved
+   dual authority, but a live project still requires an owner-approved
+   `schema/apply` to gain v6. CP-05 correctly fails closed before that step; it
+   does not perform a remote migration itself.
 
 ---
 
@@ -155,10 +163,9 @@ data request consume one control-plane write row, shared by all projects.
 
 ## 5. Missing
 
-- Filtering / sorting / field selection, and an index rule that matches the
-  queries actually issued.
-- Server-side commands with atomic multi-record writes.
-- Idempotency on data-plane writes and imports.
+- Idempotency for imports, webhooks, and any future data-plane write command
+  beyond the one CP-05 command; legacy PUT/DELETE retain their documented
+  logical semantics.
 - Chunked bulk import jobs.
 - Audit retention, and metrics for D1/R2 operation counts and storage.
 - Per-project **usage** quotas (record count, storage bytes, a distinct request
@@ -220,14 +227,14 @@ when a named project needs it.
 | No per-project request budget | `{route}:project:{projectId}` bucket, consulted before the origin read | P0 | additive | none (done in CP-03) |
 | Deployment-wide ceilings only | Per-project tighten-only quotas on `projects`, read free by the auth join | P0 | additive migration 0008 | low (done in CP-03) |
 | Interpolated identities unvalidated | `isSafeIdentity` guard at the authentication choke point | P0 | behaviour fix | low (done in CP-03) |
-| No filter/sort/selection | Indexed filtering + explicit order | P1 | new query contract | medium |
-| Unused secondary index | Index rule tied to measured queries | P1 | schema guidance | low |
-| No atomic multi-write | Commands layer, single-statement atomic inserts | P1 | new endpoint | medium |
+| No filter/sort/selection | Indexed filtering + explicit order | P1 | new query contract | medium (done in CP-04) |
+| Unused secondary index | Index rule tied to measured queries | P1 | schema guidance | low (done in CP-04) |
+| No atomic multi-write | One closed command layer, single-statement static-trigger upserts | P1 | new endpoint + schema v6 | medium (done in CP-05; future commands need separate proof) |
 | Dual schema version source | Verification against `mb_schema_versions` | P1 | extend endpoint | low (done in CP-02) |
 | No bulk import | Chunked, resumable import jobs | P2 | new endpoint | medium |
 | No metrics | CF-native dashboards + counts endpoint | P2 | additive | low |
 | No audit retention | Documented retention/rollup | P2 | ops + migration | low |
-| No file checksum/entity link | Project schema v5 | P2 | schema + endpoint | medium (needs coordinated `schema/apply`) |
+| No file checksum/entity link | Future forward project schema version | P2 | schema + endpoint | medium (needs coordinated `schema/apply`) |
 | Supabase library unwired | Import executor behind a route | P2 | new endpoint | medium |
 | One D1 REST hop per query | Native binding / Workers for Platforms | — | **DEEP CHANGE — gated** | high |
 
@@ -241,8 +248,8 @@ when a named project needs it.
 | **CP-02 Schema & migrations** | one version source of truth, verification endpoint, documented forward-only policy | No — **implemented** |
 | **CP-03 Project isolation** | per-project quotas, per-route rate periods, per-project rate buckets, fail-closed project context, isolation contract | No — **implemented** |
 | **CP-04 Query + indexes** | allowlisted filtering, explicit ordering, field selection, keyset cursor per order, project schema v5 query indexes proven by `EXPLAIN QUERY PLAN` | No — **implemented** |
-| CP-05 Commands + transactions + idempotency | server-side commands, atomic multi-record writes, `Idempotency-Key` on every write | No |
-| CP-06 Files & artifact model | schema v5: checksum, `uploaded_at`, entity links, immutable originals | No, but needs a coordinated `schema/apply` per project |
+| **CP-05 Commands + transactions + idempotency** | one server-side `records:upsert-many` command, atomic multi-record writes, persisted idempotent replay, schema v6 | No — **implemented; no remote schema applied** |
+| CP-06 Files & artifact model | future schema: checksum, `uploaded_at`, entity links, immutable originals | No, but needs a coordinated `schema/apply` per project |
 | CP-07 Audit + observability | retention, metrics, quota alerts | No |
 | CP-08 Backup/restore | scheduled export + verified restore rehearsal | No (paid backup services stay out) |
 | CP-09 Migration compatibility | import executor + chunked jobs for the existing Supabase library | No |
