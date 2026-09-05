@@ -21,7 +21,9 @@ import { errorResponse } from "./errors";
 import { parseIdempotencyKey } from "./idempotency";
 import { resolveLimits } from "./limits";
 import { deleteFile, downloadFile, listFiles, uploadFile, validateFilePath } from "./files-api";
-import { reconcileProjectFiles } from "./file-reconciliation";
+import { reconcileProjectArtifacts, reconcileProjectFiles } from "./file-reconciliation";
+import { downloadOriginalArtifact, uploadOriginalArtifact } from "./artifact-api";
+import { validateArtifactId } from "./artifacts";
 import { readJsonBounded } from "./http";
 import {
   authenticateManagementKey,
@@ -46,9 +48,9 @@ const application = {
     const url = new URL(request.url);
     const limits = resolveLimits(env);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.27.0" });
+      return json({ service: "minibase", status: "ok", version: "0.28.0" });
     }
-    if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$)|commands(?:\/|$))/.test(url.pathname)) {
+    if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$)|artifacts(?:\/|$)|commands(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);
     }
     if (request.method === "POST" && url.pathname === "/v1/projects") {
@@ -168,7 +170,19 @@ const application = {
       const actor = await authenticateManagementKey(env, request, "projects:write", correlationId);
       if (!actor) return errorResponse(new Error("unauthorized"));
       try {
-        return json(await reconcileProjectFiles(env, reconcileMatch[1]));
+        const files = await reconcileProjectFiles(env, reconcileMatch[1]);
+        const artifacts = await reconcileProjectArtifacts(env, reconcileMatch[1]);
+        return json({ ...files, artifacts });
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    const artifactReconcileMatch = url.pathname.match(/^\/v1\/projects\/([0-9a-f-]+)\/artifacts\/reconcile$/);
+    if (request.method === "GET" && artifactReconcileMatch) {
+      const actor = await authenticateManagementKey(env, request, "projects:write", correlationId);
+      if (!actor) return errorResponse(new Error("unauthorized"));
+      try {
+        return json(await reconcileProjectArtifacts(env, artifactReconcileMatch[1]));
       } catch (error) {
         return errorResponse(error);
       }
@@ -272,6 +286,39 @@ const application = {
           await deleteFile(env, principal, path);
           return cors(new Response(null, { status: 204 }));
         }
+        return errorResponse(new Error("not_found"));
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
+    const artifactMatch = url.pathname.match(/^\/v1\/artifacts\/originals(?:\/([^/]+))?$/);
+    if (artifactMatch) {
+      try {
+        const artifactId = artifactMatch[1] ? decodeURIComponent(artifactMatch[1]) : null;
+        const requiredScope = request.method === "GET" ? "files:read" : "files:write";
+        const principal = await authenticateDataKey(env, request, requiredScope, correlationId, limits);
+        if (!principal) return errorResponse(new Error("unauthorized"));
+        if (principal.kind !== "secret" && requiredScope === "files:write") {
+          // Publishable keys remain read-only even for artifacts, mirroring files:write restriction.
+          return errorResponse(new Error("unauthorized"));
+        }
+        const projectRate = await inspectProjectRequest(env, "files", principal.projectId);
+        if (projectRate === "unavailable") return errorResponse(new Error("rate_limiter_unavailable"));
+        if (projectRate === "denied") return errorResponse(new Error("rate_limited"));
+        if (!await dataOriginIsAllowed(env, principal.projectId, request)) {
+          return errorResponse(new Error("origin_not_allowed"));
+        }
+        const cors = (response: Response) => addCorsHeaders(response, request);
+        const projectLimits = principal.limits;
+        if (request.method === "GET" && artifactId) {
+          validateArtifactId(artifactId);
+          return cors(await downloadOriginalArtifact(env, principal, artifactId));
+        }
+        if (request.method === "PUT" && artifactId) {
+          validateArtifactId(artifactId);
+          return cors(json(await uploadOriginalArtifact(env, principal, artifactId, request, projectLimits), 201));
+        }
+        // No list, no delete for originals in CP-06
         return errorResponse(new Error("not_found"));
       } catch (error) {
         return errorResponse(error);

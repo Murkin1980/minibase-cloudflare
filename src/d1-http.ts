@@ -19,6 +19,13 @@ export async function queryProjectD1<T>(
   );
   const payload = await response.json() as CloudflareResponse<Array<D1HttpQueryResult<T>>>;
   const result = payload.result?.[0];
-  if (!response.ok || !payload.success || !result?.success) throw new Error("cloudflare_api_error");
+  if (!response.ok || !payload.success || !result?.success) {
+    const detail = (payload.errors?.[0] as { message?: string } | undefined)?.message ?? "";
+    // Preserve SQLite constraint messages for callers that branch on them (e.g., UNIQUE)
+    if (detail.includes("UNIQUE") || detail.includes("constraint") || detail.includes("PRIMARY KEY") || detail.includes("no such table") || detail.includes("no such column") || detail.includes("duplicate column name")) {
+      throw new Error(detail);
+    }
+    throw new Error("cloudflare_api_error");
+  }
   return result;
 }

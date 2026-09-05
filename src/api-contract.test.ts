@@ -284,9 +284,9 @@ describe("project schema API contract", () => {
       status: "ok",
       authoritativeVersion: 2,
       cachedVersion: 2,
-      latestKnownVersion: 6,
+      latestKnownVersion: 7,
       appliedVersions: [1, 2],
-      pendingVersions: [3, 4, 5, 6],
+      pendingVersions: [3, 4, 5, 6, 7],
       issues: [],
     });
 
@@ -303,8 +303,8 @@ describe("project schema API contract", () => {
     expect(applyResp.status).toBe(200);
     expect(await applyResp.json()).toEqual({
       previousVersion: 2,
-      version: 6,
-      applied: [3, 4, 5, 6],
+      version: 7,
+      applied: [3, 4, 5, 6, 7],
     });
 
     // Repeated apply is safe and idempotent
@@ -314,8 +314,8 @@ describe("project schema API contract", () => {
     });
     expect(reapplyResp.status).toBe(200);
     expect(await reapplyResp.json()).toEqual({
-      previousVersion: 6,
-      version: 6,
+      previousVersion: 7,
+      version: 7,
       applied: [],
     });
 
@@ -325,10 +325,10 @@ describe("project schema API contract", () => {
     expect(await verifiedAfter.json()).toEqual({
       projectId,
       status: "ok",
-      authoritativeVersion: 6,
-      cachedVersion: 6,
-      latestKnownVersion: 6,
-      appliedVersions: [1, 2, 3, 4, 5, 6],
+      authoritativeVersion: 7,
+      cachedVersion: 7,
+      latestKnownVersion: 7,
+      appliedVersions: [1, 2, 3, 4, 5, 6, 7],
       pendingVersions: [],
       issues: [],
     });
@@ -406,7 +406,7 @@ describe("project schema API contract", () => {
     expect(newVerify.status).toBe(200);
     const newVerifyBody = await newVerify.json() as Record<string, unknown>;
     expect(newVerifyBody.status).toBe("ok");
-    expect(newVerifyBody.pendingVersions).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(newVerifyBody.pendingVersions).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     const newApply = await harness.request(`/v1/projects/${newProjectId}/schema/apply`, {
       method: "POST",
@@ -415,8 +415,8 @@ describe("project schema API contract", () => {
     expect(newApply.status).toBe(200);
     expect(await newApply.json()).toEqual({
       previousVersion: 0,
-      version: 6,
-      applied: [1, 2, 3, 4, 5, 6],
+      version: 7,
+      applied: [1, 2, 3, 4, 5, 6, 7],
     });
   });
 

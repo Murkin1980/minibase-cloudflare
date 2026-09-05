@@ -102,6 +102,7 @@ export interface MiniBaseUpsertManyResponse {
 const collectionPattern = /^[a-z][a-z0-9_-]{1,62}$/;
 const recordIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const filePathPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
+const artifactIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function validateUpsertManyInput(
   operations: readonly MiniBaseUpsertManyOperation[],
@@ -191,7 +192,13 @@ export class MiniBaseClient {
     if (!filePathPattern.test(path) || path.includes("..") || path.includes("//") || path.endsWith("/")) {
       throw new Error("invalid_file_path");
     }
+    if (path.startsWith(".mb_artifacts/") || path.includes("/.mb_artifacts/")) throw new Error("invalid_file_path");
     return path.split("/").map(encodeURIComponent).join("/");
+  }
+
+  protected artifactId(artifactId: string): string {
+    if (!artifactIdPattern.test(artifactId)) throw new Error("invalid_artifact_id");
+    return encodeURIComponent(artifactId);
   }
 
   private collectionPath(collection: string, id?: string): string {
@@ -279,7 +286,7 @@ export class MiniBaseClient {
   }
 
   listFiles(options: { limit?: number; after?: string } = {}): Promise<{
-    files: Array<{ path: string; size: number; contentType: string | null; etag: string; createdAt: string; updatedAt: string }>;
+    files: Array<{ path: string; size: number; contentType: string | null; etag: string; createdAt: string; updatedAt: string; checksumSha256?: string | null; uploadedAt?: string | null; entityType?: string | null; entityId?: string | null }>;
     nextAfter: string | null;
     hasMore: boolean;
   }> {
@@ -300,21 +307,35 @@ export class MiniBaseClient {
     return response;
   }
 
-  uploadFile(path: string, body: Blob): Promise<{
-    path: string; size: number; contentType: string; etag: string; updatedAt: string;
+  uploadFile(path: string, body: Blob, options: { entityType?: string; entityId?: string } = {}): Promise<{
+    path: string; size: number; contentType: string; etag: string; updatedAt: string; checksumSha256: string; uploadedAt: string; entityType: string | null; entityId: string | null;
   }> {
+    const headers: Record<string, string> = {
+      "content-type": body.type || "application/octet-stream",
+      "content-length": String(body.size),
+    };
+    if (options.entityType || options.entityId) {
+      if (!options.entityType || !options.entityId) throw new Error("invalid_entity_link");
+      headers["x-minibase-entity-type"] = options.entityType;
+      headers["x-minibase-entity-id"] = options.entityId;
+    }
     return this.request(`/v1/files/${this.filePath(path)}`, {
       method: "PUT",
       body,
-      headers: {
-        "content-type": body.type || "application/octet-stream",
-        "content-length": String(body.size),
-      },
+      headers,
     });
   }
 
   deleteFile(path: string): Promise<void> {
     return this.request(`/v1/files/${this.filePath(path)}`, { method: "DELETE" });
+  }
+
+  async downloadOriginalArtifact(artifactId: string): Promise<Response> {
+    const response = await this.requestFetch(`${this.baseUrl}/v1/artifacts/originals/${this.artifactId(artifactId)}`, {
+      headers: { authorization: `Bearer ${this.key}` },
+    });
+    if (!response.ok) return parseError(response);
+    return response;
   }
 }
 
@@ -342,6 +363,26 @@ export class MiniBaseSecretClient extends MiniBaseClient {
       method: "POST",
       body: JSON.stringify({ operations }),
       headers: { "idempotency-key": idempotencyKey },
+    });
+  }
+
+  uploadOriginalArtifact(
+    artifactId: string,
+    body: Blob,
+    options: { entityType?: string; entityId?: string; contentType?: string } = {},
+  ): Promise<{ artifactId: string; size: number; contentType: string; etag: string; checksumSha256: string; uploadedAt: string; entityType: string | null; entityId: string | null }> {
+    if (!artifactIdPattern.test(artifactId)) throw new Error("invalid_artifact_id");
+    if ((options.entityType && !options.entityId) || (!options.entityType && options.entityId)) throw new Error("invalid_entity_link");
+    const headers: Record<string, string> = {
+      "content-type": options.contentType || body.type || "application/octet-stream",
+      "content-length": String(body.size),
+    };
+    if (options.entityType) headers["x-minibase-entity-type"] = options.entityType;
+    if (options.entityId) headers["x-minibase-entity-id"] = options.entityId;
+    return this.request(`/v1/artifacts/originals/${this.artifactId(artifactId)}`, {
+      method: "PUT",
+      body,
+      headers,
     });
   }
 }
