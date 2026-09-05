@@ -85,7 +85,7 @@ data request consume one control-plane write row, shared by all projects.
 
 | Area | Current | Problem / risk | Needed for future | Priority |
 | --- | --- | --- | --- | --- |
-| **A. Multi-project isolation** | One D1 per project; DB UUID resolved from key hash only; R2 prefix `{projectId}/` | Isolation was correct but **untested end-to-end**; a regression in routing would be silent | Regression tests proving A cannot read/write/list B's records or objects | **P0 — done in CP-01** |
+| **A. Multi-project isolation** | One D1 per project; DB UUID resolved from key hash only; R2 prefix `{projectId}/` | Isolation was correct but **untested end-to-end**; a regression in routing would be silent. Both interpolated identities were unvalidated, so a corrupted control row could redirect the REST path or escape the R2 prefix | Regression tests proving A cannot read/write/list B's records or objects; an identity guard; per-project quotas and rate buckets | **P0 — tests in CP-01; quotas, buckets, and fail-closed identity guard in CP-03** |
 | **B. Schema management** | Control: numbered SQL + Wrangler `d1_migrations`. Project: in-code v1–v4, `IF NOT EXISTS`, forward-only | Project `mb_schema_versions` is authoritative; verification endpoint reports drift; forward-only policy | Single source of truth + verify endpoint + regression tests | **P1 — done in CP-02** |
 | **C. Relational data** | `mb_records` document store. Project schema v4 does use real FKs (`mb_users` → `mb_sessions` etc.) but the data API cannot express them | No FKs, joins, or referential integrity reachable through the API. `customers→projects→orders→tasks→artifacts` is not modelable today | Typed collections with declared FKs, or keep documents and add explicit link records — **decide only when a real project needs it** | P2 (CP-04) |
 | **D. Query API** | `limit` (1–100) + `after` keyset cursor on `id` only | **No filtering, no sorting, no field selection.** Any query other than "by id" or "all in id order" is impossible without a full collection scan. `nextAfter` was returned on short final pages, so consumers could not tell when to stop | Filtering on indexed fields; explicit `order`; `hasMore` | **P0 — `hasMore` done in CP-01**; filtering/sorting P1 (CP-04) |
@@ -98,7 +98,7 @@ data request consume one control-plane write row, shared by all projects.
 | **K. Observability** | `observability.enabled: true`; request IDs on every response | No D1/R2 operation counts, no records/storage counts, no rate-limit event metric. Nothing tells the owner a quota is approaching | Cloudflare-native dashboards + a cheap `/v1/metrics`-style readout. Free tier only | P2 (CP-07) |
 | **L. API versioning** | `/v1/...` everywhere | **None — already solved.** The audit brief assumed this might be missing; it is not | Nothing. Add `/v2` only when a breaking change is unavoidable | — |
 | **M. Auth / authorization** | Three key classes, hash-stored, scoped, expiring, revocable, with rotation lineage. Browser writes blocked by design | No per-project scoping below `project:admin`; `scopes` is a CSV string. Fine for the current consumer count | Project-scoped keys and finer scopes **only when** a second consumer needs them. No IAM platform | P3 |
-| **N. Rate limits / abuse** | Route class + IP + hashed credential; 64 KiB JSON, 25 MiB file, page ≤ 100 | All ceilings were **hard-coded**; one rate-limit namespace (120/60s) for every route | Configurable ceilings per deployment; per-route rate periods | **P0 — configurable in CP-01** |
+| **N. Rate limits / abuse** | Route class + IP + hashed credential; 64 KiB JSON, 25 MiB file, page ≤ 100 | All ceilings were **hard-coded**; one rate-limit namespace (120/60s) for every route; no per-project request budget | Configurable ceilings per deployment; per-route rate periods; per-project buckets; per-project payload quotas | **P0 — configurable in CP-01; per-route periods, per-project buckets, and per-project quotas in CP-03** |
 | **O. Bulk operations** | None. `buildTableImportBatch` generates N statements but nothing executes or chunks them | Importing thousands of records would be one uncontrolled Worker request | Chunked import jobs with progress, resumable by checksum | P2 (CP-09) |
 
 ---
@@ -117,7 +117,10 @@ data request consume one control-plane write row, shared by all projects.
 2. **The control D1 is a shared single point of failure on the data hot path.**
    Two or three control-D1 statements precede every record read, for every
    project. A control-plane stall stops all tenants at once, and no project can
-   be isolated from it.
+   be isolated from it. *Partially mitigated in CP-03: a per-project rate bucket
+   is consulted before the origin lookup, so a tenant that exhausts its ceiling
+   stops spending control-plane capacity at that point. The structural coupling
+   itself remains and is CP-10's measurement subject.*
 3. **The query API cannot express a real query.** No filter, no sort, no field
    selection, and the one secondary index is never used by the list query. Any
    project that grows past "fetch by id" will hit full-collection scans over the
@@ -139,7 +142,10 @@ data request consume one control-plane write row, shared by all projects.
 - Idempotent provisioning with fingerprinted `Idempotency-Key` and rollback
   evidence.
 - Append-only audit log with actor, outcome, and metadata.
-- Route-class + IP + hashed-credential rate limiting.
+- Route-class + IP + hashed-credential rate limiting, now with one optional
+  binding per route class and a per-project bucket (CP-03).
+- The CP-01 ceiling clamp in `src/limits.ts`, reused verbatim as the tighten-only
+  rule for per-project quotas (CP-03).
 - Unified `{ "error": { "code": ... } }` envelope with hardened response headers.
 - R2 project-prefix isolation, path allowlist, metadata compensation on failure,
   and a read-only reconcile endpoint.
@@ -155,6 +161,11 @@ data request consume one control-plane write row, shared by all projects.
 - Idempotency on data-plane writes and imports.
 - Chunked bulk import jobs.
 - Audit retention, and metrics for D1/R2 operation counts and storage.
+- Per-project **usage** quotas (record count, storage bytes, a distinct request
+  rate number). CP-03 delivers per-project payload/page quotas and per-project
+  rate *isolation*; a usage counter costs a control-D1 read or write per request
+  and is deferred until CP-07 metrics and CP-10 measurements say what it would
+  cost.
 - File checksum, `uploaded_at`, and file→entity links.
 - An HTTP surface for the existing Supabase migration library.
 - A documented backup/restore procedure for normal operation.
@@ -172,8 +183,10 @@ Same shape as today — the gaps are contracts, not components.
                      │
    ┌─────────────────▼──────────────────────────┐
    │ MiniBase                                   │
-   │  rate limit (configurable)                 │
-   │  project isolation   (per-project D1 + R2) │  existing
+   │  rate limit (per-route period,             │
+   │              per-project bucket)           │  extend (CP-03)
+   │  project isolation   (per-project D1 + R2, │
+   │                       quotas, fail-closed) │  existing + extend (CP-03)
    │  query layer         (cursor, limits,      │  + filter/order (CP-04)
    │                       hasMore)             │
    │  command layer       (atomic, idempotent)  │  NEW (CP-05)
@@ -203,6 +216,10 @@ when a named project needs it.
 | Client-declared file size | Measured size from the streamed body | P0 | behaviour fix | low |
 | No backup/restore doc | `docs/BACKUP_RESTORE.md`, free tier only | P0 | docs | none |
 | 1 control write per request | Throttled key-activity writes | P0 | behaviour change (metadata) | low |
+| One rate-limit namespace for every route | One binding per route class, legacy binding kept as fallback | P0 | additive | none (done in CP-03) |
+| No per-project request budget | `{route}:project:{projectId}` bucket, consulted before the origin read | P0 | additive | none (done in CP-03) |
+| Deployment-wide ceilings only | Per-project tighten-only quotas on `projects`, read free by the auth join | P0 | additive migration 0008 | low (done in CP-03) |
+| Interpolated identities unvalidated | `isSafeIdentity` guard at the authentication choke point | P0 | behaviour fix | low (done in CP-03) |
 | No filter/sort/selection | Indexed filtering + explicit order | P1 | new query contract | medium |
 | Unused secondary index | Index rule tied to measured queries | P1 | schema guidance | low |
 | No atomic multi-write | Commands layer, single-statement atomic inserts | P1 | new endpoint | medium |
@@ -222,7 +239,7 @@ when a named project needs it.
 | --- | --- | --- |
 | **CP-01 Foundation hardening** | isolation + pagination + limits + idempotency + audit contract + measured file size + backup docs + tests | No — **implemented** |
 | **CP-02 Schema & migrations** | one version source of truth, verification endpoint, documented forward-only policy | No — **implemented** |
-| CP-03 Project isolation | per-project quotas and per-route rate periods | No |
+| **CP-03 Project isolation** | per-project quotas, per-route rate periods, per-project rate buckets, fail-closed project context, isolation contract | No — **implemented** |
 | CP-04 Query + indexes | filtering, explicit ordering, field selection, generated columns for indexed fields | No |
 | CP-05 Commands + transactions + idempotency | server-side commands, atomic multi-record writes, `Idempotency-Key` on every write | No |
 | CP-06 Files & artifact model | schema v5: checksum, `uploaded_at`, entity links, immutable originals | No, but needs a coordinated `schema/apply` per project |
@@ -243,8 +260,11 @@ new database engine, backend, repository, or VPS; PostgreSQL or Supabase;
 Durable Objects as a storage model; external queue infrastructure; a full
 identity platform; or any breaking change to the existing API.
 
-**Deep change detected in this session: NO.** Everything in CP-01 and CP-02 is additive or
-a bug fix inside the existing architecture.
+**Deep change detected in this session: NO.** Everything in CP-01, CP-02, and
+CP-03 is additive or a bug fix inside the existing architecture. CP-03 adds no
+component: it extends the rate limiter that already existed, reuses the CP-01
+ceiling clamp as its quota rule, and puts four nullable columns on a table the
+authentication query already joins.
 
 The one item on the horizon that *would* be a deep change is removing the D1
 REST hop (ADR-0001 "Revisit when"). Its trigger is now measurable rather than

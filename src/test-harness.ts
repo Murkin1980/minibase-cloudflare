@@ -1,5 +1,7 @@
 import type { MiniBaseEnv, R2Object } from "./contracts";
 import type { LimitOverrides } from "./limits";
+import type { QuotaKey } from "./project-quotas";
+import type { RouteClass } from "./abuse-control";
 import { sha256 } from "./security";
 
 /**
@@ -26,6 +28,8 @@ export interface HarnessProject {
   dataSchemaVersion?: number;
   schemaVersions?: number[];
   hasSchemaVersionsTable?: boolean;
+  /** CP-03 stored per-project quotas. Omitted means NULL, i.e. inherit the deployment ceiling. */
+  quotas?: Partial<Record<QuotaKey, number | null>>;
 }
 
 export interface HarnessDataKey {
@@ -49,6 +53,22 @@ export interface HarnessOptions {
   managementKeys?: HarnessManagementKey[];
   limits?: LimitOverrides;
   rateLimitSuccess?: boolean;
+  /** CP-03: declare one binding per route class instead of the single shared one. */
+  perRouteRateLimiters?: boolean;
+  /** CP-03: declare no rate-limit binding at all. */
+  omitRateLimiters?: boolean;
+  /** CP-03: deny only these route classes, proving their periods are independent. */
+  rateLimitDeniedRoutes?: RouteClass[];
+  /** CP-03: deny only these projects' buckets, proving per-project isolation. */
+  rateLimitDeniedProjects?: string[];
+  /** CP-03: the deployment demands a resolvable limiter (fail-closed switch). */
+  rateLimiterRequired?: boolean;
+}
+
+/** One observed rate-limit consultation, with the binding that served it. */
+export interface HarnessRateLimitCall {
+  binding: "RATE_LIMITER" | "RATE_LIMITER_CONTROL" | "RATE_LIMITER_DATA" | "RATE_LIMITER_FILES";
+  key: string;
 }
 
 export interface RecordRow {
@@ -75,7 +95,7 @@ export interface D1Call {
   params: unknown[];
 }
 
-export interface HarnessProjectRow {
+export interface HarnessProjectRow extends StoredQuotas {
   id: string;
   slug: string;
   name: string;
@@ -83,6 +103,23 @@ export interface HarnessProjectRow {
   d1_database_id: string;
   data_schema_version: number;
   origins: string[];
+}
+
+/** The `projects.quota_*` columns added by `migrations/0008_project_quotas.sql`. */
+export interface StoredQuotas {
+  quota_max_json_bytes: number | null;
+  quota_max_file_bytes: number | null;
+  quota_max_page_size: number | null;
+  quota_max_bulk_records: number | null;
+}
+
+function storedQuotas(quotas: HarnessProject["quotas"]): StoredQuotas {
+  return {
+    quota_max_json_bytes: quotas?.maxJsonBytes ?? null,
+    quota_max_file_bytes: quotas?.maxFileBytes ?? null,
+    quota_max_page_size: quotas?.maxPageSize ?? null,
+    quota_max_bulk_records: quotas?.maxBulkRecords ?? null,
+  };
 }
 
 export interface HarnessSchemaState {
@@ -104,6 +141,8 @@ export interface Harness {
   r2Keys: string[];
   d1Calls: D1Call[];
   controlSql: string[];
+  /** CP-03: every rate-limit consultation, with the binding that answered it. */
+  rateLimitCalls: HarnessRateLimitCall[];
   request(path: string, init?: RequestInit): Promise<Response>;
   dispose(): void;
 }
@@ -123,6 +162,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const audit: AuditRow[] = [];
   const d1Calls: D1Call[] = [];
   const controlSql: string[] = [];
+  const rateLimitCalls: HarnessRateLimitCall[] = [];
 
   for (const project of projects) {
     records.set(project.databaseId, new Map());
@@ -135,6 +175,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       d1_database_id: project.databaseId,
       data_schema_version: project.dataSchemaVersion ?? 4,
       origins: project.origins ?? [],
+      ...storedQuotas(project.quotas),
     });
     schemaStore.set(project.databaseId, {
       hasTable: project.hasSchemaVersionsTable !== false,
@@ -146,7 +187,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     id: string; project_id: string; kind: string; scopes: string;
     expires_at: string | null; revoked_at: string | null;
     d1_database_id: string; status: string; last_used_at: string | null;
-  }>();
+  } & StoredQuotas>();
   const managementKeyRows = new Map<string, {
     id: string; scopes: string; expires_at: null; revoked_at: null;
   }>();
@@ -165,6 +206,9 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         d1_database_id: project.databaseId,
         status: project.status ?? "active",
         last_used_at: null,
+        // The authentication query joins `projects`, so the harness must present
+        // the quota columns exactly as that join does.
+        ...storedQuotas(project.quotas),
       });
     }),
     ...(options.managementKeys ?? []).map(async (key, index) => {
@@ -186,10 +230,39 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     };
   }
 
+  /**
+   * Applies a CP-03 quota update to the modelled control rows.
+   *
+   * Both `projects` and the joined `api_keys` view are updated, because the
+   * data-plane authentication query reads quotas through that join: a test that
+   * replaces a quota and then issues a data request must see the new ceiling on
+   * the very next request.
+   */
+  function applyQuotaUpdate(values: unknown[]) {
+    const [maxJsonBytes, maxFileBytes, maxPageSize, maxBulkRecords, , projectId] = values as [
+      number | null, number | null, number | null, number | null, string, string,
+    ];
+    const row = projectRows.get(String(projectId));
+    if (!row) return;
+    row.quota_max_json_bytes = maxJsonBytes ?? null;
+    row.quota_max_file_bytes = maxFileBytes ?? null;
+    row.quota_max_page_size = maxPageSize ?? null;
+    row.quota_max_bulk_records = maxBulkRecords ?? null;
+    for (const keyRow of dataKeyRows.values()) {
+      if (keyRow.project_id !== String(projectId)) continue;
+      keyRow.quota_max_json_bytes = row.quota_max_json_bytes;
+      keyRow.quota_max_file_bytes = row.quota_max_file_bytes;
+      keyRow.quota_max_page_size = row.quota_max_page_size;
+      keyRow.quota_max_bulk_records = row.quota_max_bulk_records;
+    }
+  }
+
   function statement(sql: string) {
     controlSql.push(sql);
     let values: unknown[] = [];
     const prepared = {
+      sql,
+      boundValues: () => values,
       bind(...bound: unknown[]) {
         values = bound;
         return prepared;
@@ -215,6 +288,10 @@ export function createHarness(options: HarnessOptions = {}): Harness {
             d1_database_id: row.d1_database_id,
             data_schema_version: row.data_schema_version,
             status: row.status,
+            quota_max_json_bytes: row.quota_max_json_bytes,
+            quota_max_file_bytes: row.quota_max_file_bytes,
+            quota_max_page_size: row.quota_max_page_size,
+            quota_max_bulk_records: row.quota_max_bulk_records,
           };
         }
         return null;
@@ -237,6 +314,9 @@ export function createHarness(options: HarnessOptions = {}): Harness {
           for (const row of dataKeyRows.values()) {
             if (row.id === values[1]) row.last_used_at = String(values[0]);
           }
+        }
+        if (sql.includes("UPDATE projects") && sql.includes("quota_max_json_bytes")) {
+          applyQuotaUpdate(values);
         }
         if (sql.includes("UPDATE projects SET data_schema_version =")) {
           const nextVersion = Number(values[0]);
@@ -370,12 +450,65 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     throw new Error(`harness: unmodelled project SQL: ${flat}`);
   }
 
+  /**
+   * Rate-limit bindings, declared the way a real deployment declares them.
+   *
+   * `omitRateLimiters` models a Worker with no binding at all, which is how the
+   * fail-closed `MB_RATE_LIMITER_REQUIRED` path is exercised. `perRouteRateLimiters`
+   * models the CP-03 shape: three namespaces, each able to carry its own limit and
+   * period, so a browser polling `/v1/data` cannot consume the control plane's
+   * allowance.
+   */
+  const deniedRoutes = new Set(options.rateLimitDeniedRoutes ?? []);
+  const deniedProjects = new Set(options.rateLimitDeniedProjects ?? []);
+  function limiter(binding: HarnessRateLimitCall["binding"]) {
+    return {
+      async limit({ key }: { key: string }) {
+        rateLimitCalls.push({ binding, key });
+        const [route, dimension, ...rest] = key.split(":");
+        // A project bucket is denied per project; every other dimension per route.
+        if (dimension === "project") return { success: !deniedProjects.has(rest.join(":")) };
+        if (deniedRoutes.has(route as RouteClass)) return { success: false };
+        return { success: options.rateLimitSuccess ?? true };
+      },
+    };
+  }
+  const rateLimiters = options.omitRateLimiters
+    ? {}
+    : options.perRouteRateLimiters
+      ? {
+        RATE_LIMITER_CONTROL: limiter("RATE_LIMITER_CONTROL"),
+        RATE_LIMITER_DATA: limiter("RATE_LIMITER_DATA"),
+        RATE_LIMITER_FILES: limiter("RATE_LIMITER_FILES"),
+      }
+      : { RATE_LIMITER: limiter("RATE_LIMITER") };
+
   const env: MiniBaseEnv = {
-    CONTROL_DB: { prepare: statement, batch: async () => [] } as unknown as MiniBaseEnv["CONTROL_DB"],
+    CONTROL_DB: {
+      prepare: statement,
+      /**
+       * Deliberately inert apart from the quota update.
+       *
+       * Executing every batched statement would start recording audit rows for
+       * control-plane mutations the harness previously dropped, which would
+       * change assertions across provisioning, key, and origin tests that have
+       * nothing to do with CP-03. Only the transition CP-03 tests must observe —
+       * a replaced project quota — is modelled.
+       */
+      async batch(statements: Array<{ sql: string; boundValues: () => unknown[] }>) {
+        for (const prepared of statements) {
+          if (prepared.sql.includes("UPDATE projects") && prepared.sql.includes("quota_max_json_bytes")) {
+            applyQuotaUpdate(prepared.boundValues());
+          }
+        }
+        return [];
+      },
+    } as unknown as MiniBaseEnv["CONTROL_DB"],
     CLOUDFLARE_ACCOUNT_ID: "harness-account",
     CLOUDFLARE_D1_API_TOKEN: "harness-token-never-returned",
     ...(options.limits ?? {}),
-    RATE_LIMITER: { async limit() { return { success: options.rateLimitSuccess ?? true }; } },
+    ...(options.rateLimiterRequired ? { MB_RATE_LIMITER_REQUIRED: "true" } : {}),
+    ...rateLimiters,
     FILES: {
       async get(key: string) {
         const body = r2Bodies.get(key);
@@ -432,6 +565,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     r2Keys,
     d1Calls,
     controlSql,
+    rateLimitCalls,
     request,
     dispose() {
       globalThis.fetch = originalFetch;

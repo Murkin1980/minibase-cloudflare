@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DataPrincipal, MiniBaseEnv, R2Object } from "./contracts";
 import { uploadFile } from "./files-api";
+import { DEFAULT_LIMITS } from "./limits";
 
 const principal: DataPrincipal = {
   keyId: "key",
@@ -8,6 +9,8 @@ const principal: DataPrincipal = {
   databaseId: "database-a",
   kind: "secret",
   scopes: ["project:admin"],
+  // CP-03: no stored quota, so the project is served at the deployment ceilings.
+  limits: DEFAULT_LIMITS,
 };
 
 afterEach(() => vi.unstubAllGlobals());

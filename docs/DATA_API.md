@@ -57,11 +57,75 @@ unbounded request.
 `MB_MAX_BULK_RECORDS` is reserved for the CP-05 command layer; nothing reads it
 yet. See `src/limits.ts`.
 
+These are **deployment** ceilings. Each one can be tightened per project — see
+[Project quotas](#project-quotas) below and
+[`PROJECT_ISOLATION.md`](PROJECT_ISOLATION.md).
+
 ## Not supported
 
 Filtering, sorting, and field selection are not available. The API can fetch by
 ID or walk a collection in ID order. Adding a query language is CP-04 and will be
 driven by a real consumer's measured need, not speculatively.
+
+## Project quotas
+
+- `GET /v1/projects/{projectId}/quotas` reports the stored quota and the ceiling
+  the Worker will actually enforce.
+- `PUT /v1/projects/{projectId}/quotas` replaces the whole quota set.
+
+Both require a management key with `projects:write` and a project whose `status`
+is `active`.
+
+```json
+{
+  "projectId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "configured": {
+    "maxJsonBytes": 8192, "maxFileBytes": null,
+    "maxPageSize": 90, "maxBulkRecords": null
+  },
+  "effective": {
+    "maxJsonBytes": 8192, "maxFileBytes": 26214400,
+    "defaultPageSize": 20, "maxPageSize": 20, "maxBulkRecords": 500
+  }
+}
+```
+
+`configured` is what is stored — `null` means "inherit the deployment ceiling",
+which is what every pre-CP-03 project reports. `effective` is what is enforced;
+read that one when sizing a client. The two differ whenever a stored quota
+exceeds the deployment ceiling, because a quota may only **tighten** a limit,
+never widen it.
+
+`PUT` is a full replacement like `PUT .../origins`: an absent or explicitly
+`null` field clears that quota, so replaying a body is idempotent. An unknown
+field — including `keyActivityIntervalMs`, which is not a tenant quota — is
+rejected with 400 `invalid_quota` rather than ignored.
+
+Exceeding a quota produces the code a consumer already handles, never a new one:
+413 `request_body_too_large`, 413 `file_too_large`, or 400 `invalid_limit`.
+
+Quotas cost no extra control-D1 statement: the columns ride along on the
+`api_keys JOIN projects` query that authenticates the key.
+
+## Rate limiting
+
+Every non-health request is limited by route class (`control`, `data`, `files`)
+and client IP, and additionally by a SHA-256 credential identity when one is
+present. Once a request is authenticated, it is also limited by a **per-project**
+bucket, `{route}:project:{projectId}`, so one tenant exhausting its ceiling does
+not consume capacity its neighbours depend on.
+
+Each route class can have its **own period**, declared as one rate-limit binding
+per class (`RATE_LIMITER_CONTROL` / `RATE_LIMITER_DATA` / `RATE_LIMITER_FILES`).
+A class with no binding of its own falls back to the pre-CP-03 shared
+`RATE_LIMITER`, so an existing deployment behaves exactly as before. With
+`MB_RATE_LIMITER_REQUIRED="true"` a route whose binding cannot be resolved fails
+closed with 503 `rate_limiter_unavailable` instead of being served unlimited.
+
+Rate-limit denials are not audited: a denial storm would otherwise consume the
+control-D1 write quota the limiter protects. See
+[`PROJECT_ISOLATION.md`](PROJECT_ISOLATION.md) §6 and
+[`SECURITY.md`](SECURITY.md).
 
 ## Project key lifecycle
 
@@ -85,6 +149,16 @@ keys until MiniBase has end-user authentication and row-level authorization.
 
 These operations require a management key with `projects:write`. Inconsistent
 migration states fail safe with HTTP 409 (`inconsistent_schema_state`).
+
+## Isolation and fail-closed behaviour
+
+No data-plane route accepts a project identifier: the project is a consequence of
+the credential. When the project context cannot be established with certainty —
+unknown, revoked, or expired key; inactive project; missing or malformed database
+UUID; insufficient scope — the request is refused with an identical 401 and no
+backend is contacted, so a caller cannot tell those cases apart or discover
+whether a project exists. The distinguishing reason is recorded in the audit log
+instead. Full contract: [`PROJECT_ISOLATION.md`](PROJECT_ISOLATION.md).
 
 ## Files
 

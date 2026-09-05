@@ -1,4 +1,4 @@
-import type { LimitOverrides } from "./limits";
+import type { LimitOverrides, MiniBaseLimits } from "./limits";
 
 export interface D1Result<T = Record<string, unknown>> {
   results?: T[];
@@ -42,14 +42,43 @@ export interface R2Bucket {
   }>;
 }
 
+/**
+ * A Cloudflare Workers rate-limiting binding.
+ *
+ * `limit` and `period` belong to the **binding**, not to the call: `limit()`
+ * accepts only a key. Per-route periods are therefore declared as one binding per
+ * route class in `wrangler.jsonc`, never passed as arguments.
+ */
+export interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface MiniBaseEnv extends LimitOverrides {
   CONTROL_DB: D1Database;
   FILES: R2Bucket;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_D1_API_TOKEN: string;
-  RATE_LIMITER?: {
-    limit(options: { key: string }): Promise<{ success: boolean }>;
-  };
+  /**
+   * Pre-CP-03 single namespace. Still honoured as the fallback for every route
+   * class, so a deployment that declares only this binding keeps its exact
+   * previous behaviour.
+   */
+  RATE_LIMITER?: RateLimiter;
+  /**
+   * CP-03 per-route periods: one optional binding per route class, each carrying
+   * its own `limit` and `period`. A class whose binding is absent falls back to
+   * `RATE_LIMITER`.
+   */
+  RATE_LIMITER_CONTROL?: RateLimiter;
+  RATE_LIMITER_DATA?: RateLimiter;
+  RATE_LIMITER_FILES?: RateLimiter;
+  /**
+   * Opt-in fail-closed switch. When `"true"`, a rate-limited route whose binding
+   * cannot be resolved is refused with 503 `rate_limiter_unavailable` instead of
+   * being served unlimited. Off by default so local development and tests, which
+   * legitimately declare no binding, are unaffected.
+   */
+  MB_RATE_LIMITER_REQUIRED?: string;
 }
 
 export interface ManagementPrincipal {
@@ -63,6 +92,20 @@ export interface DataPrincipal {
   databaseId: string;
   kind: "publishable" | "secret";
   scopes: string[];
+  /**
+   * CP-03: the ceilings this project is actually served under — the deployment
+   * limits from `src/limits.ts`, tightened by its own quota row.
+   *
+   * Carried on the principal rather than looked up per call so that no data-plane
+   * handler can accidentally reach for the deployment ceiling and serve a project
+   * above its quota. Resolving it costs nothing extra: the quota columns are read
+   * by the same `api_keys JOIN projects` query that authenticates the key.
+   *
+   * `projectId` and `databaseId` are guaranteed to satisfy `isSafeIdentity`
+   * (`src/security.ts`) by the time a principal exists, because both are
+   * interpolated into an R2 key prefix and a Cloudflare REST path respectively.
+   */
+  limits: MiniBaseLimits;
 }
 
 export interface D1HttpQueryResult<T = Record<string, unknown>> {
