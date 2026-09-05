@@ -41,6 +41,14 @@ const clientErrorCodes = new Set([
   "invalid_collection",
   "invalid_record_id",
   "invalid_record_data",
+  // CP-04 query contract. Each one is deterministic and distinct, so a caller
+  // learns which part of the query MiniBase refused without MiniBase echoing
+  // any of the caller's text back.
+  "invalid_filter",
+  "invalid_operator",
+  "invalid_order",
+  "invalid_select",
+  "invalid_cursor",
   "invalid_origin",
   "insecure_origin",
   "invalid_origins",

@@ -151,6 +151,87 @@ const D1_QUERY = /^https:\/\/api\.cloudflare\.com\/client\/v4\/accounts\/([^/]+)
 
 const NOW = "2026-09-03T00:00:00Z";
 
+
+/**
+ * Evaluates the CP-04 list statement the way SQLite would, for the harness only.
+ *
+ * This is still a model, not an engine: it accepts exactly the static shapes
+ * `buildRecordStatement` can emit and throws on anything else, so a change to
+ * the query builder that widens the SQL surface fails these tests loudly
+ * instead of being silently modelled. Whether a real planner uses the intended
+ * index is proven separately, against real SQLite, in `src/query-index.test.ts`.
+ */
+function selectRecords(
+  store: Map<string, Map<string, RecordRow>>,
+  flat: string,
+  params: unknown[],
+): RecordRow[] {
+  const whereSql = flat.slice(flat.indexOf("WHERE ") + 6, flat.indexOf(" ORDER BY "));
+  const orderSql = flat.slice(flat.indexOf(" ORDER BY ") + 10, flat.lastIndexOf(" LIMIT ?"));
+  const conditions = whereSql.split(" AND ");
+  const values = [...params];
+  const collection = String(values.shift());
+  const limit = Number(values.pop());
+
+  const columnOf = (row: RecordRow, sql: string): string | number | null => {
+    if (sql === "id") return row.id;
+    if (sql === "created_at") return row.created_at;
+    if (sql === "updated_at") return row.updated_at;
+    if (sql === "json_extract(data, '$.schemaVersion')") {
+      const value = (JSON.parse(row.data) as { schemaVersion?: unknown }).schemaVersion;
+      return typeof value === "number" || typeof value === "string" ? value : null;
+    }
+    throw new Error(`harness: unmodelled column expression: ${sql}`);
+  };
+
+  const compare = (left: string | number | null, operator: string, right: unknown): boolean => {
+    if (left === null || right === null || right === undefined) return false;
+    switch (operator) {
+      case "=": return left === right;
+      case ">": return left > (right as typeof left);
+      case ">=": return left >= (right as typeof left);
+      case "<": return left < (right as typeof left);
+      case "<=": return left <= (right as typeof left);
+      default: throw new Error(`harness: unmodelled operator: ${operator}`);
+    }
+  };
+
+  let rows = [...(store.get(collection) ?? new Map<string, RecordRow>()).values()];
+  for (const condition of conditions.slice(1)) {
+    const rowValue = /^\((.+), id\) (<|>) \(\?, \?\)$/.exec(condition);
+    if (rowValue) {
+      const [sortValue, id] = [values.shift(), String(values.shift())];
+      const operator = rowValue[2];
+      rows = rows.filter((row) => {
+        const left = columnOf(row, rowValue[1]);
+        if (left === sortValue) return compare(row.id, operator, id);
+        return compare(left, operator, sortValue);
+      });
+      continue;
+    }
+    const simple = /^(.+) (=|>=|<=|>|<) \?$/.exec(condition);
+    if (!simple) throw new Error(`harness: unmodelled condition: ${condition}`);
+    const bound = values.shift();
+    rows = rows.filter((row) => compare(columnOf(row, simple[1]), simple[2], bound));
+  }
+
+  const terms = orderSql.split(", ").map((term) => {
+    const [sql, direction] = term.split(" ");
+    return { sql, descending: direction === "DESC" };
+  });
+  rows.sort((left, right) => {
+    for (const term of terms) {
+      const a = columnOf(left, term.sql);
+      const b = columnOf(right, term.sql);
+      if (a === b) continue;
+      const order = (a as never) < (b as never) ? -1 : 1;
+      return term.descending ? -order : order;
+    }
+    return 0;
+  });
+  return rows.slice(0, limit);
+}
+
 export function createHarness(options: HarnessOptions = {}): Harness {
   const projects = options.projects ?? [];
   const records = new Map<string, Map<string, Map<string, RecordRow>>>();
@@ -173,13 +254,13 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       name: project.name ?? project.slug,
       status: project.status ?? "active",
       d1_database_id: project.databaseId,
-      data_schema_version: project.dataSchemaVersion ?? 4,
+      data_schema_version: project.dataSchemaVersion ?? 5,
       origins: project.origins ?? [],
       ...storedQuotas(project.quotas),
     });
     schemaStore.set(project.databaseId, {
       hasTable: project.hasSchemaVersionsTable !== false,
-      versions: project.schemaVersions ? [...project.schemaVersions] : [1, 2, 3, 4],
+      versions: project.schemaVersions ? [...project.schemaVersions] : [1, 2, 3, 4, 5],
     });
   }
 
@@ -393,20 +474,13 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       fileStore.delete(String(params[0]));
       return { results: [], success: true };
     }
-    if (flat.includes("FROM mb_records WHERE collection = ? AND id > ?")) {
-      const [collection, after, limit] = params as [string, string, number];
-      return {
-        results: [...(store.get(collection) ?? new Map()).values()]
-          .filter((row) => row.id > after)
-          .sort((left, right) => (left.id < right.id ? -1 : 1))
-          .slice(0, limit),
-        success: true,
-      };
-    }
     if (flat.includes("FROM mb_records WHERE collection = ? AND id = ?")) {
       const [collection, id] = params as [string, string];
       const row = store.get(collection)?.get(id);
       return { results: row ? [row] : [], success: true };
+    }
+    if (flat.startsWith("SELECT id, data, created_at, updated_at FROM mb_records WHERE collection = ?")) {
+      return { results: selectRecords(store, flat, params), success: true };
     }
     if (flat.includes("INSERT INTO mb_records")) {
       const [collection, id, data, createdAt, updatedAt] =

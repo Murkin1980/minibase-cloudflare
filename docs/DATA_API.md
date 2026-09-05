@@ -61,11 +61,86 @@ These are **deployment** ceilings. Each one can be tightened per project — see
 [Project quotas](#project-quotas) below and
 [`PROJECT_ISOLATION.md`](PROJECT_ISOLATION.md).
 
-## Not supported
+## Query (CP-04)
 
-Filtering, sorting, and field selection are not available. The API can fetch by
-ID or walk a collection in ID order. Adding a query language is CP-04 and will be
-driven by a real consumer's measured need, not speculatively.
+`GET /v1/data/{collection}` accepts a **closed** query contract. MiniBase is not
+an SQL gateway: every column name, operator, and sort direction below is chosen
+by the server from a static allowlist in `src/record-query.ts`, and every value
+travels as a bind parameter. There is no raw SQL, no raw `WHERE`, no raw
+`ORDER BY`, no dynamic column name, and still no `OFFSET`.
+
+```http
+GET /v1/data/lessons?filter[schemaVersion]=2&filter[updatedAt.gte]=2026-09-01T00:00:00Z
+                    &order=updatedAt.desc&select=id,data,updatedAt&limit=50&after=mbq1.…
+```
+
+### Filters — `filter[field]` / `filter[field.operator]`
+
+| Field | Column / path | Operators |
+| --- | --- | --- |
+| `id` | `id` | `eq` |
+| `createdAt` | `created_at` | `eq`, `gt`, `gte`, `lt`, `lte` |
+| `updatedAt` | `updated_at` | `eq`, `gt`, `gte`, `lt`, `lte` |
+| `schemaVersion` | `json_extract(data, '$.schemaVersion')` | `eq` |
+
+The operator defaults to `eq` when omitted. Values are validated by field —
+timestamps must be ISO-8601, `schemaVersion` an integer, `id` a record ID — so a
+malformed value is a 400 rather than a bound value that silently matches
+nothing. Ranges over `id` are not a filter; that is what the cursor is for.
+
+`schemaVersion` is the only JSON field, and it is here because every stored
+document shape MiniBase's consumers use carries one and rolling documents
+forward requires selecting by it. **A field is added only with a real query
+behind it and an index under it**, never speculatively.
+
+### Order — `order=field.direction`
+
+`id`, `createdAt`, `updatedAt`, each `asc` or `desc`. `id` is always appended as
+the final tie-breaker, so records sharing a timestamp still have exactly one
+total order and a page boundary inside a run of equal values can neither skip
+nor repeat a record. The default is `id.asc`.
+
+### Select — `select=a,b`
+
+`id`, `data`, `createdAt`, `updatedAt`. Selection shapes **the response only**.
+It never narrows the SQL projection, the cursor, the filters, or authorization,
+so it cannot be used to reach an internal column or to escape a check. An
+unknown name is 400 `invalid_select`, not a silently dropped field.
+
+### Cursor
+
+| Query | `nextAfter` |
+| --- | --- |
+| no `filter` and no `order` | the record ID, exactly as before CP-04 |
+| any `filter` or `order` | opaque `mbq1.<base64url>` |
+
+The opaque cursor carries the sort value, the tie-breaker `id`, and a digest of
+the collection, filters, and order that produced it. Pass it back unmodified.
+Anything else — a hand-made cursor, a truncated one, or one issued for a
+different filter, order, or collection — is refused with 400 `invalid_cursor`,
+so a paging client cannot silently receive a page from a different query. The
+digest is a consistency check, not a security control: isolation still comes
+from the key alone, as it always has.
+
+### Errors
+
+Unknown or malformed input is always **rejected**, never ignored:
+`invalid_filter`, `invalid_operator`, `invalid_order`, `invalid_select`,
+`invalid_cursor`, `invalid_limit` — all 400.
+
+### Cost
+
+One query is still **one D1 REST round trip** and one page is still one
+statement with a `limit + 1` probe row. Each supported combination is proven to
+use its intended index by `EXPLAIN QUERY PLAN` assertions against real SQLite in
+`src/query-index.test.ts`.
+
+### Still not supported
+
+Arbitrary SQL, user-supplied SQL fragments, dynamic column names, joins, a
+relation graph, full-text or fuzzy search, analytical queries, and `OFFSET`
+pagination. Filtering on an arbitrary JSON field is not supported and will not
+be until a real consumer need and an index exist for it.
 
 ## Project quotas
 

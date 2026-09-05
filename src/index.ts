@@ -5,7 +5,7 @@ import {
   deleteRecord,
   getRecord,
   listRecords,
-  parseListQuery,
+  parseRecordListQuery,
   putRecord,
   validateCollection,
   validateRecordData,
@@ -192,7 +192,7 @@ const application = {
         const projectLimits = principal.limits;
         if (request.method === "GET" && id) return cors(json(await getRecord(env, principal, collection, id)));
         if (request.method === "GET" && !id) {
-          return cors(json(await listRecords(env, principal, collection, parseListQuery(url, projectLimits))));
+          return cors(json(await listRecords(env, principal, collection, parseRecordListQuery(url, collection, projectLimits))));
         }
         if (request.method === "PUT" && id) {
           return cors(json(await putRecord(

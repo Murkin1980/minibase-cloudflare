@@ -25,6 +25,7 @@ Worker  src/index.ts
    5. rate limit   src/abuse-control.ts   per-project bucket {route}:project:{projectId}
    6. origin check src/cors.ts            project_origins allowlist
    7. execute      src/data-api.ts | src/files-api.ts   under the project's own ceilings
+                  src/record-query.ts parses and binds the CP-04 record query
    8. harden       src/response-security.ts
    ▼
 CONTROL_DB (D1 binding)      api.cloudflare.com D1 REST API      R2 (binding)
@@ -60,7 +61,7 @@ Consequences that shape the design:
 | project → database | `api_keys.key_hash` joins `projects`; the database UUID is never accepted from a request |
 | project → objects | `projectObjectKey()` prefixes every R2 key with the authenticated project ID |
 | browser → writes | publishable keys are limited to `data:read` and `files:read`; write scopes require `mb_secret_*` |
-| caller → SQL | collection, record ID, and file path pass allowlist regexes and are bound as parameters; arbitrary SQL is never accepted |
+| caller → SQL | collection, record ID, and file path pass allowlist regexes and are bound as parameters; CP-04 query filter/order/select names come from a static server-side allowlist (`src/record-query.ts`) and values are always bound; arbitrary SQL is never accepted |
 | caller → tenant | browser `Origin` must appear in that project's `project_origins` allowlist |
 | project → ceilings | `projects.quota_*` tightens the deployment limits for that project only, and can never widen them |
 | project → rate budget | one `{route}:project:{projectId}` bucket per project per route class |

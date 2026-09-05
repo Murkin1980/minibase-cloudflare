@@ -115,6 +115,33 @@ export const projectSchemaMigrations: ProjectSchemaMigration[] = [
       "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (4, datetime('now'))",
     ],
   },
+  {
+    /**
+     * CP-04 query indexes.
+     *
+     * Index-only, by design: no `ALTER TABLE`, no generated column, no row
+     * rewrite. `mb_records` already stores `created_at`, `updated_at`, and the
+     * JSON document, so every supported CP-04 query is servable from an index
+     * built over existing data. That keeps the upgrade of a populated project
+     * database — including the live tenant — a pure metadata operation that
+     * cannot lose or alter a record, and keeps the Worker from ever writing a
+     * column an un-migrated tenant lacks.
+     *
+     * Each index ends in `id` because `id` is the tie-breaker every keyset
+     * cursor uses; without it a page boundary inside a run of equal timestamps
+     * could skip or repeat rows. The `schemaVersion` expression index uses the
+     * same fixed JSON path the query builder emits, which is the only reason
+     * SQLite can match it.
+     */
+    version: 5,
+    statements: [
+      "CREATE INDEX IF NOT EXISTS mb_records_collection_created_id_idx ON mb_records(collection, created_at, id)",
+      "CREATE INDEX IF NOT EXISTS mb_records_collection_updated_id_idx ON mb_records(collection, updated_at, id)",
+      `CREATE INDEX IF NOT EXISTS mb_records_collection_schema_version_id_idx
+        ON mb_records(collection, json_extract(data, '$.schemaVersion'), id)`,
+      "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (5, datetime('now'))",
+    ],
+  },
 ];
 
 export const latestKnownProjectSchemaVersion = projectSchemaMigrations.at(-1)?.version ?? 0;

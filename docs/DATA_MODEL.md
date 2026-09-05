@@ -88,6 +88,7 @@ statement `IF NOT EXISTS`.
 | 2 | `mb_files` + index |
 | 3 | `mb_migration_imports` (Supabase import bookkeeping) |
 | 4 | `mb_users`, `mb_activation_tokens`, `mb_organization_memberships`, `mb_sessions`, `mb_auth_audit_events` + indexes |
+| 5 | CP-04 query indexes on `mb_records` — **indexes only**, no table or column change |
 
 ### `mb_records`
 
@@ -105,10 +106,32 @@ per-field indexes reachable through the data API. Collections are logical
 partitions inside one physical table, which is what keeps provisioning cheap and
 schema-free for small projects.
 
-Ordering is by `(collection, id)` — the primary key. `mb_records_collection_updated_idx
-(collection, updated_at DESC)` exists but is **not** used by the list query;
-adding an index without a query that uses it is waste, so it stays until CP-04
-introduces ordering by `updated_at`.
+Ordering defaults to `(collection, id)` — the primary key — and CP-04 added the
+optional orders `createdAt` and `updatedAt`, each with `id` as the final
+tie-breaker.
+
+Project schema v5 adds exactly the indexes those queries use, and nothing else:
+
+| Index | Serves |
+| --- | --- |
+| `mb_records_collection_created_id_idx (collection, created_at, id)` | `order=createdAt.*`, `filter[createdAt.*]` |
+| `mb_records_collection_updated_id_idx (collection, updated_at, id)` | `order=updatedAt.*`, `filter[updatedAt.*]` |
+| `mb_records_collection_schema_version_id_idx (collection, json_extract(data,'$.schemaVersion'), id)` | `filter[schemaVersion]` |
+
+Each one ends in `id` because `id` is the tie-breaker every keyset cursor uses;
+without it a page boundary inside equal timestamps could skip or repeat rows.
+The `schemaVersion` index is an **expression** index over a fixed JSON path — the
+same path the query builder emits, which is the only reason SQLite can match it.
+No generated column and no `ALTER TABLE` were needed, so v5 upgrades a populated
+project database as a pure metadata operation that cannot touch a record.
+
+`mb_records_collection_updated_idx (collection, updated_at DESC)` from v1 is
+still unused by any query — the CP-04 orders match the v5 composite instead. It
+is kept: removing an index is a separate change with its own justification, not
+a side effect of adding a query API.
+
+Indexes are added only for a query that exists. There is deliberately **no**
+generic index over arbitrary JSON fields.
 
 ### `mb_files`
 
