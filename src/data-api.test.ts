@@ -32,6 +32,11 @@ describe("data-plane boundaries", () => {
       d1_database_id: "db",
       status: "active",
       last_used_at: null,
+      // CP-03: NULL quotas, i.e. the project inherits the deployment ceilings.
+      quota_max_json_bytes: null,
+      quota_max_file_bytes: null,
+      quota_max_page_size: null,
+      quota_max_bulk_records: null,
     };
     expect(dataKeyRecordIsAuthorized(row, "data:read", new Date("2029-01-01"))).toBe(true);
     expect(dataKeyRecordIsAuthorized(row, "data:write", new Date("2029-01-01"))).toBe(false);

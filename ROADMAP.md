@@ -9,7 +9,7 @@ MB5 Supabase move   [##########] 100%
 MB6 Client SDK      [##########] 100%
 MB7 Hardening       [##########] 100%
 MB8 Launch          [##########] 100%
-MB9 vNext upgrade   [##--------]  20%   CP-02 of 10
+MB9 vNext upgrade   [###-------]  30%   CP-03 of 10
 
 Overall             [##########] 100%
 ```
@@ -32,6 +32,7 @@ Overall             [##########] 100%
   onboarding decisions.
 - MB9: reusing MiniBase as a data platform for the whole MPE ecosystem. Scoped
   in `docs/SCALABILITY.md` as ten checkpoints (CP-01…CP-10). CP-01 (foundation
-  hardening) and CP-02 (schema version authority & verification) are complete
-  locally; they are backward compatible and add no paid resource. Deployment
-  remains a separate owner-approved step.
+  hardening), CP-02 (schema version authority & verification), and CP-03 (project
+  isolation: per-project quotas, per-route rate periods, fail-closed project
+  context) are complete locally; they are backward compatible and add no paid
+  resource. Deployment remains a separate owner-approved step.

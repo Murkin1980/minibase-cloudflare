@@ -15,10 +15,16 @@
 - состояния provisioning и безопасный повтор операции;
 - курсорная пагинация с однозначным `hasMore`;
 - настраиваемые лимиты запросов с жёсткими максимумами;
-- аудит с `entity`, `entity_id` и `correlation_id`.
+- аудит с `entity`, `entity_id` и `correlation_id`;
+- per-project квоты, которые могут только сужать лимиты деплоя;
+- отдельные rate-периоды для control, data и files, плюс отдельный rate-bucket
+  на проект;
+- fail-closed поведение при отсутствующем или повреждённом project context.
 
 Архитектура описана в [ARCHITECTURE.md](ARCHITECTURE.md). Аудит масштабируемости,
 риски и план checkpoint'ов — в [docs/SCALABILITY.md](docs/SCALABILITY.md).
+Контракт изоляции проектов для потребителей — в
+[docs/PROJECT_ISOLATION.md](docs/PROJECT_ISOLATION.md).
 
 ## Локальная проверка
 
@@ -106,6 +112,32 @@ Content-Type: application/json
 Произвольный HTTPS origin не отражается в фактическом data response: после
 аутентификации ключа Worker сверяет origin с его проектом. HTTP разрешён только
 для `localhost` и `127.0.0.1`.
+
+### Project quotas
+
+Каждый потолок запросов можно дополнительно сузить для отдельного проекта — без
+нового деплоя:
+
+```http
+GET /v1/projects/{projectId}/quotas
+PUT /v1/projects/{projectId}/quotas
+Authorization: Bearer mb_management_...
+Content-Type: application/json
+
+{"maxJsonBytes":8192,"maxPageSize":25}
+```
+
+Ответ разделяет `configured` (что сохранено, `null` = наследовать потолок деплоя)
+и `effective` (что Worker реально применит). Квота может только **сужать**
+потолок деплоя и никогда не может его расширить — ни через endpoint, ни прямой
+правкой control D1: некорректное значение игнорируется. `PUT` заменяет весь
+набор, поэтому повтор того же тела идемпотентен. Scope — `projects:write`.
+
+Превышение квоты возвращает уже известные коды: 413 `request_body_too_large`,
+413 `file_too_large`, 400 `invalid_limit`. Новых кодов ошибок квоты не добавляют.
+
+Квоты читаются тем же `api_keys JOIN projects`-запросом, который аутентифицирует
+ключ, поэтому не добавляют ни одного обращения к control D1 на горячем пути.
 
 ## Модель подключения
 

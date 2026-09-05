@@ -1,5 +1,241 @@
 # MiniBase session notes
 
+## 2026-09-05 — Iteration 37: MiniBase vNext CP-03 project isolation
+
+Decision for the MPE data platform remains **EXTEND_EXISTING**. Work stayed
+strictly inside the canonical repository `Murkin1980/minibase-cloudflare`: one
+Worker, one control D1, one shared R2 bucket, one D1 per project. No new
+repository, database, or parallel backend was created.
+
+Baseline before the change: `main` at
+`5e3c63409cebd25b4e1dce534187d46e51c8430e`, CP-01 and CP-02 complete,
+129 vitest tests across 25 files, Worker bundle 62.36 KiB (gzip 13.09 KiB).
+
+### Objective and Problem
+
+`docs/SCALABILITY.md` scoped CP-03 as "per-project quotas and per-route rate
+periods". The read-only audit of the CP-02 code confirmed three concrete gaps
+and one latent defect:
+
+- **One rate-limit namespace for every route.** `abuse-control.ts` already
+  partitioned keys into `control` / `data` / `files`, but all three consulted the
+  same binding — production namespace 22001, 120 calls per 60 seconds. A browser
+  polling `/v1/data` could therefore starve the control plane. This was listed in
+  `docs/SECURITY.md` as an open production launch blocker.
+- **No per-project request budget.** Limiting was by IP and by credential hash
+  only. A project with many keys had no ceiling of its own, and one tenant could
+  consume the account-wide D1 row quota every other tenant depends on —
+  `docs/SCALABILITY.md` §3 risks 1 and 2.
+- **No per-project ceilings.** CP-01 made every limit configurable per
+  *deployment*. Nothing could be configured per *project*, so the smallest tenant
+  and the largest shared one allowance.
+- **Latent defect: both interpolated identities were unvalidated.**
+  `projects.d1_database_id` is interpolated into the Cloudflare REST path and
+  `projects.id` into the R2 key prefix. Neither is attacker-controlled — both come
+  from the control plane — but neither was checked, so a hand-edited or corrupted
+  control row could redirect the data plane to another API path or write an object
+  outside its tenant prefix. Reproduced conceptually and closed rather than left
+  as a theoretical risk.
+
+### Implemented in CP-03
+
+1. **Per-project quotas (`src/project-quotas.ts`, `migrations/0008_project_quotas.sql`)**
+   - Four nullable `INTEGER` columns on `projects`, each with
+     `CHECK (col IS NULL OR col > 0)`, no `NOT NULL`, no `DEFAULT`.
+   - They live on `projects` rather than in a `project_quotas` table **on
+     purpose**: the data-plane authentication query already joins `projects`, so a
+     quota costs **zero** additional control-D1 statements on the hot path. A
+     separate table would have added one read per authenticated request and
+     re-created exactly the coupling CP-01 removed.
+   - Tighten-only clamp, reusing CP-01's rule one level down:
+     `HARD_LIMITS >= deployment ceiling >= project quota = enforced value`. An
+     invalid stored value is ignored, so a row edited directly in the control D1
+     can never widen a limit.
+   - `keyActivityIntervalMs` is deliberately **not** a quota. It sizes the
+     control-D1 write budget shared by every tenant, so a project raising it would
+     raise the whole deployment's write volume — the CP-01 bug reintroduced. The
+     management endpoint rejects it as an unknown field and `scripts/test-migrations.mjs`
+     asserts the migration cannot add it.
+   - Exceeding a quota returns a code consumers already handle: 413
+     `request_body_too_large`, 413 `file_too_large`, 400 `invalid_limit`. No new
+     error code, so no consumer error-handling change.
+
+2. **Quota management API (`GET`/`PUT /v1/projects/{projectId}/quotas`)**
+   - Scope `projects:write`, restricted to `status = 'active'`, mirroring every
+     other project-scoped control-plane route.
+   - `PUT` is a full replacement like `PUT .../origins`, so replaying a body is
+     idempotent and an omitted field clears that quota.
+   - The response separates `configured` (stored, `null` = inherit) from
+     `effective` (actually enforced). Reporting both is deliberate: hiding the
+     clamp would make a quota look applied when it is not.
+   - Unknown fields are rejected with 400 `invalid_quota` rather than ignored, so
+     a misspelled quota cannot look like it was applied.
+   - Update and audit event go through `CONTROL_DB.batch()`, which is atomic, so
+     a quota change is never visible without its audit trail
+     (`project.quotas_replaced`, `entity = 'project'`, CP-01 `correlation_id`).
+
+3. **Per-route rate periods (`src/abuse-control.ts`)**
+   - Optional `RATE_LIMITER_CONTROL` / `RATE_LIMITER_DATA` / `RATE_LIMITER_FILES`.
+     A Cloudflare binding carries its own `limit` and `period` and `limit()`
+     accepts only a key, so per-route periods must be separate bindings — they
+     cannot be arguments.
+   - The pre-CP-03 shared `RATE_LIMITER` remains the fallback for every class, so
+     an already-deployed Worker behaves exactly as before until the owner approves
+     separate namespaces. No Cloudflare resource was created.
+
+4. **Per-project rate buckets**
+   - `{route}:project:{projectId}`, consulted after authentication and **before**
+     the origin lookup — which is itself a control-D1 read — so an exhausted
+     tenant stops spending control-plane capacity at that point.
+   - Rate-limit denials write **no** audit row: a denial storm would otherwise
+     spend the same daily write quota the limiter protects.
+
+5. **Fail-closed project context (`src/security.ts`, `src/data-auth.ts`)**
+   - `isSafeIdentity` requires `^[A-Za-z0-9-]{1,64}$`. Dots are excluded, so `..`
+     cannot be expressed at all; `/ ? # %` and whitespace are excluded, so no path
+     or query boundary can be injected. Canonical UUIDs always satisfy it.
+   - Applied in `dataKeyDenialReason`, the single choke point every data-plane
+     request passes through, so Records and Files are covered by one rule and a
+     bad row is refused before any Cloudflare or R2 call.
+   - Reuses the existing `project_unavailable` denial reason, so the response is
+     the same 401 as every other project-context failure.
+   - Opt-in `MB_RATE_LIMITER_REQUIRED="true"` makes a rate-limited route with no
+     resolvable binding fail closed with 503 `rate_limiter_unavailable` instead of
+     serving unlimited traffic. Off by default so local builds and tests are
+     unaffected; 503 rather than 429 because the caller is not at fault.
+
+6. **No project-existence leakage**
+   - Unknown credential, suspended project, missing database, and corrupted
+     database id all return an identical 401 `{"error":{"code":"unauthorized"}}`,
+     and a new test asserts the four are indistinguishable while the audit log
+     still records the distinguishing `metadata.reason`. Operators can diagnose;
+     callers cannot enumerate.
+
+7. **Tests (+48, 129 → 177 across 26 files)**
+   - `src/project-quotas.test.ts`: inheritance, tightening, the widen-refusal, the
+     hard maximum, fail-closed on malformed stored values, `keyActivityIntervalMs`
+     exclusion, full-replacement semantics, unknown-field rejection.
+   - `src/isolation.test.ts` (+13): malformed `d1_database_id` refused with no
+     outbound D1 call; malformed `project_id` refused with no R2 object addressed;
+     real UUIDs still accepted; identical denial across four project states; audit
+     keeps the detail; per-project page/JSON/file quotas not affecting a neighbour;
+     clamp above the deployment ceiling; exhausted project denied while a neighbour
+     is served; separate bucket per project per route class; CP-01 cross-project
+     isolation re-proven under the CP-03 limiter shape; fail-closed 503.
+   - `src/abuse-control.test.ts` (+11): route classification, binding precedence
+     and legacy fallback, only the governing binding consulted, one class denied
+     without the others, health/preflight never gated, `MB_RATE_LIMITER_REQUIRED`
+     semantics, per-project key shape and isolation.
+   - `src/api-contract.test.ts` (+10): quota GET/PUT contract, idempotent replay,
+     clearing by omission, enforcement on the very next data request, `effective`
+     below `configured`, invalid bodies changing nothing, scope enforcement,
+     `project_not_found` for missing and suspended projects, neighbour isolation,
+     unsupported method.
+   - `src/security.test.ts` (+3) and `src/data-auth.test.ts` (+2): the identity
+     guard and the quota carried on the authenticated principal.
+   - `scripts/test-d1.mjs`: **migration-without-data-loss proof.** Seeds a
+     populated control database at 0007 — a live-shaped project, its key, its
+     origin, its audit history — then applies 0008 and asserts every row survives
+     unchanged with the new columns `NULL`, that the `CHECK` rejects 0 and -1, that
+     a valid quota stores and clears, and that the columns are readable through the
+     exact join the data plane uses.
+   - `scripts/test-migrations.mjs`: 0008 must declare four checked nullable
+     `INTEGER`s with no `NOT NULL`, no `DEFAULT`, and no key-activity column.
+   - `src/test-harness.ts`: models the quota columns on both `projects` and the
+     joined `api_keys` view, per-route bindings, recorded rate-limit consultations
+     with the answering binding, and the `MB_RATE_LIMITER_REQUIRED` switch.
+     `batch()` stays inert apart from the quota update, on purpose: executing every
+     batched statement would start recording audit rows for provisioning, key, and
+     origin mutations the harness previously dropped, changing assertions unrelated
+     to CP-03.
+
+8. **Documentation**
+   - New `docs/PROJECT_ISOLATION.md`: the consumer contract — ten numbered
+     guarantees with their mechanism and proof, how a project is identified, the
+     fail-closed matrix, the quota model and its cost, the full quota API, the
+     three rate-limit dimensions and what per-project rate limiting **cannot** do,
+     a consumer checklist, and what is deliberately out of scope.
+   - Updated `ARCHITECTURE.md`, `README.md`, `ROADMAP.md`, `docs/DATA_MODEL.md`,
+     `docs/DATA_API.md`, `docs/SECURITY.md`, `docs/MIGRATIONS.md`,
+     `docs/SCALABILITY.md`, and `wrangler.example.jsonc` (per-route bindings and
+     the fail-closed switch, both commented out because creating a rate-limit
+     namespace touches real Cloudflare resources).
+   - Version 0.24.0 → 0.25.0.
+
+### Deliberately not done
+
+- **No per-project record-count or storage-byte quota.** Enforcing either needs a
+  `COUNT` over the D1 REST hop per write, and ADR-0001 says round trips must be
+  minimized rather than assumed cheap. Usage counters belong with CP-07 metrics.
+- **No per-project numeric request rate.** A binding owns `limit` and `period`; a
+  distinct number per project would need a MiniBase-maintained counter, i.e. a
+  control-D1 write per request per project. Documented explicitly as a limitation
+  rather than left implicit.
+- **No project-scoped management keys** (`docs/SCALABILITY.md` item M, P3 — no IAM
+  platform) and no row-level end-user authorization.
+- **No project schema v5.** No project-database column was added, so the live
+  `interactive-kp` tenant is unaffected and no coordinated `schema/apply` is
+  needed. That remains CP-06.
+- **No change to the D1 REST hop.** That is ADR-0001's "revisit when" condition, a
+  deep change, and stays gated until CP-10 produces measurements.
+- No CP-04, CP-05, or CP-06 work. No connection to `ai-microtask-factory`;
+  persistent integration remains blocked behind CP-03/CP-05/CP-06, of which only
+  CP-03 is now done.
+
+### Verification
+
+Commands run from the repository root on 2026-09-05, and their results:
+
+| Command | Result |
+| --- | --- |
+| `npm install` (`npm ci`) | PASS — 188 packages |
+| `npm run lint` | PASS |
+| `npm run typecheck` | PASS |
+| `npm test` | PASS — **177 tests / 26 files** (baseline 129 / 25) |
+| `npm run test:d1` | PASS — includes the 0007 → 0008 data-preservation proof |
+| `npm run test:migrations` | PASS — 8 files, ordered 0001-0008, non-destructive, audit and quota contracts present |
+| `npm run test:release` | PASS |
+| `npm run test:worker` | PASS — against the built bundle |
+| `npm run build` (`wrangler deploy --dry-run`) | PASS |
+| `npm run check` (all of the above) | PASS |
+
+Test count confirmed stable at 177 across three consecutive runs.
+
+Bundle size: **62.36 KiB → 71.44 KiB** (gzip **13.09 KiB → 14.89 KiB**), i.e.
++9.08 KiB / +14.6% uncompressed and +1.80 KiB / +13.7% gzipped. The growth is
+`src/project-quotas.ts` (5.3 KiB, new subsystem), the expanded abuse-control
+dimension (+1.5 KiB), the quotas route and project-rate checks in `index.ts`
+(+1.2 KiB), and the identity guard in `data-auth.ts` (+0.5 KiB). No new
+dependency was added.
+
+Migration result: **additive and non-destructive, verified on real SQLite.**
+0008 was applied to a control database already holding a live-shaped project, its
+API key, its origin allowlist entry, and its audit history; every row survived
+unchanged and the four new columns read back `NULL`, i.e. "inherit the deployment
+ceiling". No migration was applied to any real or remote database.
+
+Secret scan: repeated and clean. No `mb_secret_*` / `mb_publishable_*` /
+`mb_management_*` value in real format (prefix + 64 hex) exists in any tracked or
+new file; every key literal CP-03 introduces is an obvious test double. No
+Cloudflare API token, private key, or credential assignment was added.
+`.dev.vars` and `wrangler.jsonc` remain untracked, and the new rate-limit
+`namespace_id` values in `wrangler.example.jsonc` are commented-out
+`REPLACE_WITH_*` placeholders.
+
+`git diff --check`: clean, no whitespace errors.
+
+Deep change detected: **NO**. CP-03 adds no component — it extends the rate
+limiter that already existed, reuses the CP-01 ceiling clamp as its quota rule,
+and puts four nullable columns on a table the authentication query already joins.
+
+No production deploy. No Cloudflare resource, secret, remote database, or project
+schema was created or changed. No connection to `ai-microtask-factory`. No
+force-push and no merge into `main`.
+
+GitHub Actions was not run: the owner's limit is exhausted, and `.github/` does
+not exist in this repository. Local `npm run check` is the official quality gate,
+per `docs/LOCAL_VALIDATION_POLICY.md`.
+
 ## 2026-09-04 — Iteration 36: MiniBase vNext CP-02 schema version authority
 
 Decision for MPE data platform: **EXTEND_EXISTING**. Work strictly within the

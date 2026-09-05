@@ -10,7 +10,7 @@ Wrangler's own `d1_migrations` table.
 
 | Table | Purpose | Key columns |
 | --- | --- | --- |
-| `projects` | one row per tenant | `id` (UUID), `slug` UNIQUE, `status`, `d1_database_id` UNIQUE, `data_schema_version` |
+| `projects` | one row per tenant | `id` (UUID), `slug` UNIQUE, `status`, `d1_database_id` UNIQUE, `data_schema_version`, `quota_max_json_bytes`, `quota_max_file_bytes`, `quota_max_page_size`, `quota_max_bulk_records` |
 | `api_keys` | publishable and secret data keys | `key_hash` UNIQUE (SHA-256 only), `project_id` → `projects`, `kind`, `scopes` CSV, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from_key_id` |
 | `management_keys` | control-plane keys | `key_hash` UNIQUE, `scopes` CSV, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from_key_id` |
 | `provisioning_jobs` | idempotent provisioning | `idempotency_key` PK, `request_hash`, `status`, `rollback_status`, `d1_database_id` |
@@ -19,6 +19,34 @@ Wrangler's own `d1_migrations` table.
 
 No raw key value is ever stored. `scopes` is a comma-separated string;
 `project:admin` implies every data scope.
+
+### Per-project quotas (CP-03)
+
+The four `projects.quota_*` columns are nullable `INTEGER`s with
+`CHECK (col IS NULL OR col > 0)`, added by `migrations/0008_project_quotas.sql`.
+`NULL` means "inherit the deployment ceiling from `src/limits.ts`", which is what
+every project provisioned before CP-03 holds, so the migration changes nothing for
+an existing tenant.
+
+They are columns on `projects` rather than a separate table because the
+data-plane authentication query already joins `projects`: a quota therefore costs
+**zero** additional control-D1 statements on the hot path. A `project_quotas`
+table would have added one read per authenticated request, re-creating the
+coupling CP-01 removed.
+
+A stored value may only **tighten** the deployment ceiling, never widen it — see
+[`PROJECT_ISOLATION.md`](PROJECT_ISOLATION.md) §4 for the full contract.
+`keyActivityIntervalMs` is deliberately not a quota: it sizes a control-D1 write
+budget shared by every tenant.
+
+### Interpolated identities
+
+`projects.id` and `projects.d1_database_id` are the only two values MiniBase
+interpolates instead of binding as parameters, because both are addresses and not
+data: the project ID becomes the R2 key prefix, and the database UUID becomes a
+segment of the Cloudflare REST path. Both are validated against
+`isSafeIdentity` (`src/security.ts`) during authentication, and a row that fails
+is refused with 401 before any backend is contacted.
 
 ### Audit event contract
 

@@ -12,6 +12,7 @@ migrations/0001_control_plane.sql
 migrations/0002_management_keys.sql
 ...
 migrations/0007_audit_contract.sql
+migrations/0008_project_quotas.sql
 ```
 
 ```bash
@@ -27,6 +28,15 @@ Rules, enforced by `npm run test:migrations`:
   are forward-only and non-destructive;
 - no column is added twice across files (`ALTER TABLE … ADD COLUMN` fails if the
   column exists).
+
+`0008` adds the CP-03 per-project quota columns. It is the model for an additive
+control migration on a database that already holds tenants: four nullable
+`INTEGER` columns, each with `CHECK (col IS NULL OR col > 0)`, no `NOT NULL` and
+no `DEFAULT`. A row written before the migration therefore reads back `NULL`,
+which means "inherit the deployment ceiling", and an existing tenant's behaviour
+is unchanged. `scripts/test-d1.mjs` proves this by seeding a populated control
+database at `0007`, applying `0008`, and asserting that the project, its key, its
+origin, and its audit history all survive with the new columns `NULL`.
 
 An applied migration is immutable. To change something, add the next file.
 

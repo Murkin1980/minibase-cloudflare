@@ -17,12 +17,15 @@ consumer app
    ▼
 Worker  src/index.ts
    1. resolve or generate x-minibase-request-id
-   2. rate limit   src/abuse-control.ts   route class + IP + SHA-256 credential
+   2. rate limit   src/abuse-control.ts   route-class binding + IP + SHA-256 credential
    3. route        /health | /v1/...
    4. authenticate src/data-auth.ts | src/management-keys.ts   hash lookup in CONTROL_DB
-   5. origin check src/cors.ts            project_origins allowlist
-   6. execute      src/data-api.ts | src/files-api.ts
-   7. harden       src/response-security.ts
+   4a. fail closed src/security.ts        isSafeIdentity(projectId, databaseId)
+   4b. resolve     src/project-quotas.ts  deployment ceilings tightened by the project quota
+   5. rate limit   src/abuse-control.ts   per-project bucket {route}:project:{projectId}
+   6. origin check src/cors.ts            project_origins allowlist
+   7. execute      src/data-api.ts | src/files-api.ts   under the project's own ceilings
+   8. harden       src/response-security.ts
    ▼
 CONTROL_DB (D1 binding)      api.cloudflare.com D1 REST API      R2 (binding)
 projects, api_keys,          one database per project            key = {projectId}/{path}
@@ -59,6 +62,13 @@ Consequences that shape the design:
 | browser → writes | publishable keys are limited to `data:read` and `files:read`; write scopes require `mb_secret_*` |
 | caller → SQL | collection, record ID, and file path pass allowlist regexes and are bound as parameters; arbitrary SQL is never accepted |
 | caller → tenant | browser `Origin` must appear in that project's `project_origins` allowlist |
+| project → ceilings | `projects.quota_*` tightens the deployment limits for that project only, and can never widen them |
+| project → rate budget | one `{route}:project:{projectId}` bucket per project per route class |
+| route → rate period | one optional rate-limit binding per route class (`control` / `data` / `files`) |
+| control row → backend | `isSafeIdentity` guards both interpolated identities, so a corrupted row is refused, not used |
+
+The full contract, including the fail-closed matrix and the no-existence-leak
+guarantee, is [`docs/PROJECT_ISOLATION.md`](docs/PROJECT_ISOLATION.md).
 
 ## Control plane vs data plane
 
@@ -70,6 +80,12 @@ The data plane (`mb_publishable_*` / `mb_secret_*`) owns records and files. It
 never touches `CONTROL_DB` except to authenticate, and it writes key-activity
 metadata at most once per key per interval rather than per request.
 
+Per-project quotas are read inside that same authentication join, so a project's
+own ceilings cost no additional control-plane statement. This is the rule CP-03
+followed and the reason the quota columns live on `projects` rather than in a
+table of their own: on this architecture, anything added to the hot path is paid
+for by every tenant at once.
+
 ## Documents
 
 | File | Contents |
@@ -77,6 +93,7 @@ metadata at most once per key per interval rather than per request.
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | every table, in both databases |
 | [`docs/DATA_API.md`](docs/DATA_API.md) | endpoint contracts |
 | [`docs/AUTH.md`](docs/AUTH.md) | identity and session boundary |
+| [`docs/PROJECT_ISOLATION.md`](docs/PROJECT_ISOLATION.md) | CP-03 isolation contract: guarantees, fail-closed matrix, per-project quotas, rate periods |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | threat model, headers, limits |
 | [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md) | schema change policy |
 | [`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md) | backup, restore, verification |

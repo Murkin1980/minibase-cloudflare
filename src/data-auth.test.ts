@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { MiniBaseEnv } from "./contracts";
 import { authenticateDataKey, dataKeyDenialReason, keyActivityUpdateIsDue } from "./data-auth";
+import { DEFAULT_LIMITS } from "./limits";
+import type { ProjectQuotaRow } from "./project-quotas";
 
-interface TestDataKeyRow {
+interface TestDataKeyRow extends ProjectQuotaRow {
   id: string;
   project_id: string;
   kind: "publishable" | "secret";
@@ -24,6 +26,11 @@ const activeRow: TestDataKeyRow = {
   d1_database_id: "database-1",
   status: "active",
   last_used_at: null,
+  // CP-03: NULL quotas, i.e. the project inherits the deployment ceilings.
+  quota_max_json_bytes: null,
+  quota_max_file_bytes: null,
+  quota_max_page_size: null,
+  quota_max_bulk_records: null,
 };
 
 function authEnv(row: TestDataKeyRow | null) {
@@ -64,6 +71,56 @@ describe("data authentication audit", () => {
     expect(dataKeyDenialReason({ ...activeRow, status: "suspended" }, "data:read", now)).toBe("project_inactive");
     expect(dataKeyDenialReason({ ...activeRow, d1_database_id: "" }, "data:read", now)).toBe("project_unavailable");
     expect(dataKeyDenialReason(activeRow, "data:write", now)).toBe("scope");
+  });
+
+  it("fails closed on a project context that could escape interpolation", () => {
+    // CP-03: `d1_database_id` becomes a segment of the Cloudflare REST path and
+    // `project_id` becomes the R2 key prefix. Neither is a bound parameter, so a
+    // corrupted control row is refused rather than used. Both report the same
+    // reason as a missing database, so a caller cannot tell the cases apart.
+    const now = new Date("2029-01-01T00:00:00Z");
+    for (const d1_database_id of ["../elsewhere", "db/../../admin", "database-1?sql=SELECT", "database 1", "database-1%2F", ".."]) {
+      expect(dataKeyDenialReason({ ...activeRow, d1_database_id }, "data:read", now), d1_database_id)
+        .toBe("project_unavailable");
+    }
+    for (const project_id of ["../project-b", "project-1/../../other", "project 1", "project-1?x=1", ".."]) {
+      expect(dataKeyDenialReason({ ...activeRow, project_id }, "data:read", now), project_id)
+        .toBe("project_unavailable");
+    }
+    // The identities MiniBase actually issues are accepted.
+    expect(dataKeyDenialReason({
+      ...activeRow,
+      project_id: "58e27c56-0374-4a3f-84c5-90dca9bfcb3e",
+      d1_database_id: "22250945-ad19-44e4-a18f-9012983bd5f6",
+    }, "data:read", now)).toBeNull();
+  });
+
+  it("resolves the project quota onto the authenticated principal", async () => {
+    // The quota columns ride along on the authentication join, so the principal
+    // is the single place a data-plane handler can read a ceiling from.
+    const state = authEnv({
+      ...activeRow,
+      quota_max_json_bytes: 8192,
+      quota_max_file_bytes: null,
+      quota_max_page_size: 25,
+      quota_max_bulk_records: null,
+    });
+    const principal = await authenticateDataKey(
+      state.env,
+      new Request("https://minibase.test/v1/data/lessons", {
+        headers: { authorization: "Bearer mb_publishable_token" },
+      }),
+      "data:read",
+    );
+    expect(principal?.limits).toMatchObject({
+      maxJsonBytes: 8192,
+      maxPageSize: 25,
+      defaultPageSize: 25,
+      // Untouched by any quota: this sizes a write budget shared by every tenant.
+      keyActivityIntervalMs: DEFAULT_LIMITS.keyActivityIntervalMs,
+      maxFileBytes: DEFAULT_LIMITS.maxFileBytes,
+      maxBulkRecords: DEFAULT_LIMITS.maxBulkRecords,
+    });
   });
 
   it("audits an unknown key without storing the raw token", async () => {

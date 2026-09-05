@@ -14,6 +14,14 @@ const statusByCode: Record<string, number> = {
   inconsistent_schema_state: 409,
   cloudflare_api_error: 502,
   rate_limited: 429,
+  /**
+   * CP-03 fail-closed: rate limiting was declared mandatory for this deployment
+   * (`MB_RATE_LIMITER_REQUIRED`) but no binding could be resolved for the route
+   * class. Serving the request unlimited would defeat the isolation the limiter
+   * exists to provide, so the request is refused instead. Distinct from 429
+   * because the caller is not at fault and retrying will not help.
+   */
+  rate_limiter_unavailable: 503,
 };
 
 const clientErrorCodes = new Set([
@@ -37,6 +45,7 @@ const clientErrorCodes = new Set([
   "insecure_origin",
   "invalid_origins",
   "invalid_key_kind",
+  "invalid_quota",
   "invalid_schema_version",
   "invalid_file_path",
   "content_length_required",

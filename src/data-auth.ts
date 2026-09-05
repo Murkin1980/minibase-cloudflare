@@ -1,9 +1,10 @@
 import type { DataPrincipal, MiniBaseEnv } from "./contracts";
 import { recordAudit } from "./audit";
 import { DEFAULT_LIMITS, type MiniBaseLimits } from "./limits";
-import { sha256 } from "./security";
+import { resolveProjectLimits, type ProjectQuotaRow } from "./project-quotas";
+import { isSafeIdentity, sha256 } from "./security";
 
-interface DataKeyRow {
+interface DataKeyRow extends ProjectQuotaRow {
   id: string;
   project_id: string;
   kind: "publishable" | "secret";
@@ -49,7 +50,22 @@ export function dataKeyDenialReason(
   const expiry = row.expires_at ? Date.parse(row.expires_at) : null;
   if (expiry !== null && (!Number.isFinite(expiry) || expiry <= now.getTime())) return "expired";
   if (row.status !== "active") return "project_inactive";
-  if (!row.d1_database_id) return "project_unavailable";
+  // CP-03 fail-closed project context.
+  //
+  // These two values are the whole of MiniBase's data isolation: `project_id`
+  // becomes the R2 key prefix and `d1_database_id` becomes a segment of the
+  // Cloudflare REST path. Neither is a bound parameter, so neither may be
+  // attacker- or corruption-shaped. A missing database was already refused;
+  // CP-03 also refuses one that is present but not a safe identity, and applies
+  // the same rule to the project ID.
+  //
+  // The refusal reuses the existing `project_unavailable` reason, so it is
+  // audited like every other denial and returns the same 401 as an unknown key:
+  // a caller cannot distinguish a malformed control row from a project that does
+  // not exist, and no request reaches Cloudflare or R2.
+  if (!isSafeIdentity(row.project_id) || !isSafeIdentity(row.d1_database_id)) {
+    return "project_unavailable";
+  }
   if (!scopesAllow(row, requiredScope)) return "scope";
   return null;
 }
@@ -93,8 +109,12 @@ export async function authenticateDataKey(
   }
   const token = authorization.slice(7);
   const row = await env.CONTROL_DB.prepare(
+    // CP-03: the quota columns ride along on the join that already resolves the
+    // database UUID, so per-project quotas add no statement to the hot path.
     `SELECT k.id, k.project_id, k.kind, k.scopes, k.expires_at, k.revoked_at,
-            k.last_used_at, p.d1_database_id, p.status
+            k.last_used_at, p.d1_database_id, p.status,
+            p.quota_max_json_bytes, p.quota_max_file_bytes,
+            p.quota_max_page_size, p.quota_max_bulk_records
        FROM api_keys k
        JOIN projects p ON p.id = k.project_id
       WHERE k.key_hash = ?`,
@@ -119,5 +139,8 @@ export async function authenticateDataKey(
     databaseId: row.d1_database_id,
     kind: row.kind,
     scopes: row.scopes.split(","),
+    // Deployment ceilings tightened by this project's quota row. Invalid or
+    // oversized stored quotas fall back to the deployment value, never widen it.
+    limits: resolveProjectLimits(limits, row),
   };
 }

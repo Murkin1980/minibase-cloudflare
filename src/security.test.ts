@@ -2,8 +2,35 @@ import { describe, expect, it } from "vitest";
 import { managementKeyRecordIsAuthorized } from "./management-keys";
 import { initialPublishableKeyScopes, initialSecretKeyScopes } from "./key-scopes";
 import { provisioningFingerprint } from "./provision";
-import { randomToken } from "./security";
+import { isSafeIdentity, randomToken } from "./security";
 import { parseCreateDataKey, parseCreateManagementKey, parseCreateProject } from "./validation";
+
+describe("interpolated identity guard", () => {
+  it("accepts the identities MiniBase actually issues", () => {
+    // crypto.randomUUID() for projects, Cloudflare's D1 UUID for databases.
+    expect(isSafeIdentity("58e27c56-0374-4a3f-84c5-90dca9bfcb3e")).toBe(true);
+    expect(isSafeIdentity("22250945-ad19-44e4-a18f-9012983bd5f6")).toBe(true);
+    expect(isSafeIdentity("database-a")).toBe(true);
+  });
+
+  it("rejects anything that could escape a URL path or a key prefix", () => {
+    // Dots are excluded outright, so `..` cannot be expressed at all; path,
+    // query, and fragment boundaries and whitespace are excluded too.
+    for (const value of [
+      "", "..", ".", "../elsewhere", "a/../../b", "a?x=1", "a#f", "a b", "a%2Fb",
+      "a\\b", "a'b", 'a"b', "a;b", "a\nb", "\u0000", "x".repeat(65),
+    ]) {
+      expect(isSafeIdentity(value), JSON.stringify(value)).toBe(false);
+    }
+  });
+
+  it("rejects values that are not strings at all", () => {
+    // A NULL or numeric control-plane column must not be coerced into an address.
+    for (const value of [null, undefined, 42, {}, [], true]) {
+      expect(isSafeIdentity(value)).toBe(false);
+    }
+  });
+});
 
 describe("MiniBase security contract", () => {
   it("creates distinct scoped key formats", () => {

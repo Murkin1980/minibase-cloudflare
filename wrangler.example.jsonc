@@ -26,10 +26,66 @@
   // positive integer within its hard ceiling is ignored, so a typo can never
   // widen an unbounded request. See src/limits.ts and docs/SCALABILITY.md.
   //
+  // These are DEPLOYMENT ceilings. A per-project quota can only tighten them,
+  // and is administered at runtime through
+  // PUT /v1/projects/{projectId}/quotas — see docs/PROJECT_ISOLATION.md.
+  //
   // "vars": {
   //   "MB_MAX_JSON_BYTES": "65536",
   //   "MB_MAX_FILE_BYTES": "26214400",
   //   "MB_MAX_PAGE_SIZE": "100",
   //   "MB_MAX_BULK_RECORDS": "500"
+  // },
+
+  // CP-03 per-route rate periods.
+  //
+  // A rate-limit binding carries its own `limit` and `period`; the `limit()` call
+  // supplies only a key. Separate periods for control, data, and files traffic
+  // are therefore declared as one binding per route class. Each namespace_id must
+  // be distinct and is allocated by Cloudflare.
+  //
+  // All of this is OPTIONAL and left commented out on purpose: creating a
+  // rate-limit namespace touches real Cloudflare resources and needs the owner's
+  // explicit approval (docs/SECURITY.md). A deployment that declares none of
+  // these keeps its exact pre-CP-03 behaviour, because a single `RATE_LIMITER`
+  // binding — production namespace 22001, 120 calls per 60 seconds — remains the
+  // fallback for every route class.
+  //
+  // The values below are an ILLUSTRATIVE split, not a recommendation: a browser
+  // polling records needs a far higher data allowance than the control plane
+  // needs, and file uploads are the largest per call.
+  //
+  // "unsafe": {
+  //   "bindings": [
+  //     {
+  //       "name": "RATE_LIMITER_CONTROL",
+  //       "type": "ratelimit",
+  //       "namespace_id": "REPLACE_WITH_CONTROL_NAMESPACE_ID",
+  //       "simple": { "limit": 60, "period": 60 }
+  //     },
+  //     {
+  //       "name": "RATE_LIMITER_DATA",
+  //       "type": "ratelimit",
+  //       "namespace_id": "REPLACE_WITH_DATA_NAMESPACE_ID",
+  //       "simple": { "limit": 600, "period": 60 }
+  //     },
+  //     {
+  //       "name": "RATE_LIMITER_FILES",
+  //       "type": "ratelimit",
+  //       "namespace_id": "REPLACE_WITH_FILES_NAMESPACE_ID",
+  //       "simple": { "limit": 120, "period": 60 }
+  //     }
+  //   ]
+  // }
+
+  // Opt-in fail-closed switch for rate limiting.
+  //
+  // When "true", a rate-limited route whose binding cannot be resolved is refused
+  // with 503 `rate_limiter_unavailable` instead of being served unlimited. Leave
+  // it unset for local development and tests, which legitimately declare no
+  // binding. Set it in production only once the bindings above exist.
+  //
+  // "vars": {
+  //   "MB_RATE_LIMITER_REQUIRED": "true"
   // }
 }

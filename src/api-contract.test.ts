@@ -442,6 +442,214 @@ describe("project schema API contract", () => {
   });
 });
 
+/**
+ * CP-03 per-project quota contract.
+ *
+ * The harness models `CONTROL_DB.batch()` as inert apart from the quota update
+ * itself, so the atomic audit insert is observed through `controlSql`, which
+ * records every prepared statement including the ones destined for a batch.
+ */
+describe("project quota API contract", () => {
+  const projectId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const neighbourId = "11111111-2222-4333-8444-555555555555";
+  const owner = { authorization: "Bearer mb_management_owner" };
+  const reader = { authorization: "Bearer mb_management_reader" };
+  const dataRead = { authorization: "Bearer mb_publishable_read" };
+
+  function quotaHarness(overrides = {}) {
+    return createHarness({
+      projects: [
+        { projectId, databaseId: "db-quota", slug: "quota-project" },
+        { projectId: neighbourId, databaseId: "db-neighbour", slug: "neighbour" },
+      ],
+      dataKeys: [{
+        key: "mb_publishable_read", projectId, kind: "publishable", scopes: ["data:read"],
+      }],
+      managementKeys: [
+        { key: "mb_management_owner", scopes: ["projects:write"] },
+        { key: "mb_management_reader", scopes: ["audit:read"] },
+      ],
+      ...overrides,
+    });
+  }
+
+  interface QuotaBody {
+    projectId: string;
+    configured: Record<string, number | null>;
+    effective: Record<string, number>;
+  }
+
+  it("reports the inherited deployment ceilings for an unconfigured project", async () => {
+    harness = quotaHarness();
+    const response = await harness.request(`/v1/projects/${projectId}/quotas`, { headers: owner });
+    expect(response.status).toBe(200);
+    const body = await response.json() as QuotaBody;
+    expect(body).toEqual({
+      projectId,
+      // null means "inherit": this is what every pre-CP-03 project reports.
+      configured: {
+        maxJsonBytes: null, maxFileBytes: null, maxPageSize: null, maxBulkRecords: null,
+      },
+      effective: {
+        maxJsonBytes: 64 * 1024, maxFileBytes: 25 * 1024 * 1024,
+        defaultPageSize: 50, maxPageSize: 100, maxBulkRecords: 500,
+      },
+    });
+    // The key-activity throttle is not a tenant quota and is never reported.
+    expect(JSON.stringify(body)).not.toContain("keyActivityIntervalMs");
+  });
+
+  it("replaces quotas and reports both the stored and the enforced values", async () => {
+    harness = quotaHarness();
+    const response = await harness.request(`/v1/projects/${projectId}/quotas`, {
+      method: "PUT",
+      headers: { ...owner, "content-type": "application/json" },
+      body: JSON.stringify({ maxJsonBytes: 8192, maxPageSize: 25 }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as QuotaBody;
+    expect(body.configured).toEqual({
+      maxJsonBytes: 8192, maxFileBytes: null, maxPageSize: 25, maxBulkRecords: null,
+    });
+    expect(body.effective).toMatchObject({ maxJsonBytes: 8192, maxPageSize: 25, defaultPageSize: 25 });
+
+    // GET reads the stored row back.
+    const read = await harness.request(`/v1/projects/${projectId}/quotas`, { headers: owner });
+    expect(await read.json()).toEqual(body);
+
+    // The replacement is audited with the CP-01 entity and correlation contract.
+    const auditSql = harness.controlSql.filter((sql) => sql.includes("project.quotas_replaced"));
+    expect(auditSql).toHaveLength(1);
+    expect(auditSql[0]).toContain("entity, entity_id, correlation_id");
+    expect(auditSql[0]).toContain("'project'");
+  });
+
+  it("is idempotent and clears a quota that the replacement omits", async () => {
+    harness = quotaHarness();
+    const put = (body: unknown) => harness!.request(`/v1/projects/${projectId}/quotas`, {
+      method: "PUT",
+      headers: { ...owner, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const first = await put({ maxJsonBytes: 8192, maxPageSize: 25 });
+    const replay = await put({ maxJsonBytes: 8192, maxPageSize: 25 });
+    expect(await replay.json()).toEqual(await first.json());
+    // PUT is a full replacement, so omitting a field clears it.
+    const cleared = await put({ maxJsonBytes: 8192 });
+    const clearedBody = await cleared.json() as QuotaBody;
+    expect(clearedBody.configured.maxPageSize).toBeNull();
+    expect(clearedBody.effective.maxPageSize).toBe(100);
+  });
+
+  it("enforces a replaced quota on the very next data request", async () => {
+    harness = quotaHarness();
+    // Before: the deployment ceiling applies.
+    expect((await harness.request("/v1/data/lessons?limit=50", { headers: dataRead })).status).toBe(200);
+    await harness.request(`/v1/projects/${projectId}/quotas`, {
+      method: "PUT",
+      headers: { ...owner, "content-type": "application/json" },
+      body: JSON.stringify({ maxPageSize: 10 }),
+    });
+    // After: the project's own ceiling applies, with no redeploy and no extra
+    // control-D1 read, because the quota rides along on the authentication join.
+    expect((await harness.request("/v1/data/lessons?limit=50", { headers: dataRead })).status).toBe(400);
+    expect((await harness.request("/v1/data/lessons?limit=10", { headers: dataRead })).status).toBe(200);
+  });
+
+  it("reports an effective ceiling lower than a configured one above the deployment", async () => {
+    // A quota may only tighten, so the honest answer is two numbers, not one.
+    harness = quotaHarness({ limits: { MB_MAX_PAGE_SIZE: "20" } });
+    const response = await harness.request(`/v1/projects/${projectId}/quotas`, {
+      method: "PUT",
+      headers: { ...owner, "content-type": "application/json" },
+      body: JSON.stringify({ maxPageSize: 90 }),
+    });
+    const body = await response.json() as QuotaBody;
+    expect(body.configured.maxPageSize).toBe(90);
+    expect(body.effective.maxPageSize).toBe(20);
+    expect(body.effective.defaultPageSize).toBe(20);
+    expect((await harness.request("/v1/data/lessons?limit=90", { headers: dataRead })).status).toBe(400);
+  });
+
+  it("rejects an invalid quota body without changing anything", async () => {
+    harness = quotaHarness();
+    const put = (body: unknown) => harness!.request(`/v1/projects/${projectId}/quotas`, {
+      method: "PUT",
+      headers: { ...owner, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const unknownField = await put({ maxRecords: 10 });
+    expect(unknownField.status).toBe(400);
+    await expect(unknownField.json()).resolves.toEqual({ error: { code: "invalid_quota" } });
+    const zero = await put({ maxPageSize: 0 });
+    expect(zero.status).toBe(400);
+    const fractional = await put({ maxJsonBytes: 1.5 });
+    expect(fractional.status).toBe(400);
+    // Nothing was stored, so the project still inherits the deployment ceilings.
+    const after = await harness.request(`/v1/projects/${projectId}/quotas`, { headers: owner });
+    expect((await after.json() as QuotaBody).configured).toEqual({
+      maxJsonBytes: null, maxFileBytes: null, maxPageSize: null, maxBulkRecords: null,
+    });
+  });
+
+  it("requires projects:write", async () => {
+    harness = quotaHarness();
+    expect((await harness.request(`/v1/projects/${projectId}/quotas`)).status).toBe(401);
+    expect((await harness.request(`/v1/projects/${projectId}/quotas`, { headers: reader })).status).toBe(401);
+    expect((await harness.request(`/v1/projects/${projectId}/quotas`, {
+      method: "PUT",
+      headers: { ...reader, "content-type": "application/json" },
+      body: JSON.stringify({ maxPageSize: 10 }),
+    })).status).toBe(401);
+    // A denied caller learns nothing about the project.
+    expect((await harness.request(`/${projectId}/quotas`, { headers: owner })).status).toBe(404);
+  });
+
+  it("reports project_not_found for a project that is not active", async () => {
+    harness = quotaHarness();
+    const unknown = await harness.request("/v1/projects/99999999-9999-4999-8999-999999999999/quotas", {
+      headers: owner,
+    });
+    expect(unknown.status).toBe(404);
+    await expect(unknown.json()).resolves.toEqual({ error: { code: "project_not_found" } });
+
+    // A suspended project is not administrable, exactly like every other
+    // project-scoped control-plane route.
+    const suspended = createHarness({
+      projects: [{ projectId, databaseId: "db-quota", slug: "quota-project", status: "suspended" }],
+      managementKeys: [{ key: "mb_management_owner", scopes: ["projects:write"] }],
+    });
+    try {
+      const response = await suspended.request(`/v1/projects/${projectId}/quotas`, { headers: owner });
+      expect(response.status).toBe(404);
+    } finally {
+      suspended.dispose();
+    }
+  });
+
+  it("leaves a neighbouring project's quotas untouched", async () => {
+    harness = quotaHarness();
+    await harness.request(`/v1/projects/${projectId}/quotas`, {
+      method: "PUT",
+      headers: { ...owner, "content-type": "application/json" },
+      body: JSON.stringify({ maxPageSize: 10 }),
+    });
+    const neighbour = await harness.request(`/v1/projects/${neighbourId}/quotas`, { headers: owner });
+    const neighbourBody = await neighbour.json() as QuotaBody;
+    expect(neighbourBody.configured.maxPageSize).toBeNull();
+    expect(neighbourBody.effective.maxPageSize).toBe(100);
+  });
+
+  it("refuses an unsupported method on the quota route", async () => {
+    harness = quotaHarness();
+    const response = await harness.request(`/v1/projects/${projectId}/quotas`, {
+      method: "DELETE", headers: owner,
+    });
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: { code: "not_found" } });
+  });
+});
+
 describe("existing consumer compatibility", () => {
   it("keeps the Records API response shape a superset of the previous one", async () => {
     harness = singleProject();

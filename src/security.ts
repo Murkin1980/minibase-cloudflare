@@ -13,6 +13,31 @@ export function randomToken(prefix: MiniBaseKeyPrefix): string {
   return `${prefix}${body}`;
 }
 
+/**
+ * Shape of an identity MiniBase interpolates into a URL path or a storage key.
+ *
+ * Two values are interpolated rather than bound as parameters, because both are
+ * addresses and not data: the project's D1 database UUID goes into the Cloudflare
+ * REST path (`src/d1-http.ts`), and the project ID becomes the R2 key prefix
+ * (`projectObjectKey`, `src/files-api.ts`).
+ *
+ * Neither ever comes from a request — both are read from the control plane during
+ * authentication. Validating them anyway is the fail-closed half of CP-03 project
+ * isolation: a hand-edited, truncated, or corrupted control row must not be able
+ * to redirect the data plane to another Cloudflare API path or to escape the
+ * `{projectId}/` object prefix into a neighbouring tenant.
+ *
+ * Dots are excluded from the character class, so `..` cannot be expressed at all,
+ * and `/`, `?`, `#`, `%`, and whitespace are excluded, so no path or query
+ * boundary can be injected. Canonical UUIDs — what MiniBase actually generates
+ * and what Cloudflare returns — always satisfy it.
+ */
+const safeIdentityPattern = /^[A-Za-z0-9-]{1,64}$/;
+
+export function isSafeIdentity(value: unknown): value is string {
+  return typeof value === "string" && safeIdentityPattern.test(value);
+}
+
 export function constantTimeHexEqual(left: string, right: string): boolean {
   const leftBytes = encoder.encode(left);
   const rightBytes = encoder.encode(right);
