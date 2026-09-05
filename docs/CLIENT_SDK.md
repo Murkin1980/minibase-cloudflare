@@ -57,8 +57,14 @@ Supported filters, orders, and select fields are exported as `filterOperators`,
 `src/client.test.ts` to match the server contract in `src/record-query.ts`
 exactly. See [`DATA_API.md`](DATA_API.md) §Query for the wire format.
 
-`after` must be the previous page's `nextAfter`, unchanged. It is opaque and is
-bound to the filter, order, and collection that produced it: reusing it with a
-different query is a deterministic 400 `invalid_cursor`, not a wrong page. A
+`after` must be the previous page's `nextAfter`, unchanged. It is opaque and
+carries a query-consistency digest of the filter, order, and collection that
+produced it: reusing it with a different query is a deterministic 400
+`invalid_cursor`, not a wrong page. The digest is not a signature and the cursor
+is not tamper-proof — it guards against accidental misuse, not an attacker.
+
+Timestamp filter values (`createdAt`, `updatedAt`) must carry an explicit
+timezone and are normalized to canonical UTC server-side, so `new Date(...).toISOString()`
+is always a safe thing to send. A
 call that passes neither `filter` nor `order` behaves exactly as it did before
 CP-04, cursor included.

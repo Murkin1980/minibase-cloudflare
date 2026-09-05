@@ -16,8 +16,50 @@ import type { MiniBaseLimits } from "./limits";
  */
 
 const recordIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-/** ISO-8601 instant, the shape `created_at` / `updated_at` are always written in. */
-const timestampPattern = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})?$/;
+
+/**
+ * An ISO-8601 instant with an **explicit** timezone.
+ *
+ * `created_at` and `updated_at` are always written by `new Date().toISOString()`,
+ * so every stored value is canonical UTC `YYYY-MM-DDTHH:mm:ss.sssZ`. SQLite
+ * compares those columns as TEXT, which means a filter value in any other
+ * representation compares lexicographically against a different shape and
+ * silently returns the wrong rows — `2026-09-01T00:00:00+05:00` sorts after
+ * `2026-09-01T00:00:00.000Z` as text even though it is the earlier instant, and
+ * a value with no timezone is not a defined instant at all.
+ *
+ * So a filter value is required to carry a timezone and is normalized to the
+ * one canonical UTC form before it is bound. Two spellings of the same instant
+ * therefore produce byte-identical SQL parameters, and filtering, ordering, and
+ * keyset pagination all stay consistent with the stored representation.
+ */
+const timestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Validates an instant and returns it as canonical UTC.
+ *
+ * `Date.parse` alone is not enough: it accepts `2026-02-30` by rolling it over
+ * into March, so the round trip below is what rejects a date that does not
+ * exist rather than quietly shifting the caller's filter.
+ */
+export function normalizeTimestamp(raw: string): string {
+  if (!timestampPattern.test(raw)) throw new Error("invalid_filter");
+  const parsed = new Date(raw);
+  const time = parsed.getTime();
+  if (!Number.isFinite(time)) throw new Error("invalid_filter");
+  // Compare the calendar fields the caller wrote against the ones that survived
+  // parsing, in the caller's own offset, so a rolled-over date is caught.
+  const offsetMatch = /(Z|[+-]\d{2}:\d{2})$/.exec(raw)![1];
+  const offsetMinutes = offsetMatch === "Z"
+    ? 0
+    : (offsetMatch.startsWith("-") ? -1 : 1) *
+      (Number(offsetMatch.slice(1, 3)) * 60 + Number(offsetMatch.slice(4, 6)));
+  const local = new Date(time + offsetMinutes * 60_000);
+  const written = raw.slice(0, 10);
+  const round = local.toISOString().slice(0, 10);
+  if (written !== round) throw new Error("invalid_filter");
+  return parsed.toISOString();
+}
 
 export type FilterOperator = "eq" | "gt" | "gte" | "lt" | "lte";
 
@@ -39,10 +81,7 @@ interface FieldSpec {
 const timestampField = (sql: string): FieldSpec => ({
   sql,
   operators: ["eq", "gt", "gte", "lt", "lte"],
-  parse(raw) {
-    if (!timestampPattern.test(raw)) throw new Error("invalid_filter");
-    return raw;
-  },
+  parse: normalizeTimestamp,
 });
 
 /**
@@ -127,14 +166,18 @@ function base64UrlDecode(value: string): string {
 }
 
 /**
- * Binds a cursor to the query that produced it.
+ * A query-consistency digest: the cursor is bound to the query that produced it.
  *
- * FNV-1a is not a security control and is not used as one: the project is still
- * resolved from the key alone, and every cursor value is bound as a parameter.
- * Its only job is to make "page 2 of a different filter/order" a deterministic
- * 400 instead of a silently wrong page.
+ * This is FNV-1a, **not** a cryptographic signature. It is not a security
+ * control, does not authenticate a cursor, and does not prevent deliberate
+ * modification — a caller who wants to can construct a cursor that passes it.
+ * That is acceptable because it protects nothing: the project is still resolved
+ * from the key alone, every cursor value is bound as a parameter, and the id
+ * and sort value are re-validated on the way in. Its only job is to turn
+ * "page 2 of a different filter/order" into a deterministic 400 instead of a
+ * silently wrong page.
  */
-function querySignature(query: Pick<RecordQuery, "filters" | "orderField" | "direction">, collection: string): string {
+function queryDigest(query: Pick<RecordQuery, "filters" | "orderField" | "direction">, collection: string): string {
   const canonical = JSON.stringify([
     collection,
     query.orderField,
@@ -156,7 +199,7 @@ export function encodeRecordCursor(
   id: string,
 ): string {
   if (query.legacy) return id;
-  return `mbq1.${base64UrlEncode(JSON.stringify([querySignature(query, collection), sortValue, id]))}`;
+  return `mbq1.${base64UrlEncode(JSON.stringify([queryDigest(query, collection), sortValue, id]))}`;
 }
 
 function decodeRecordCursor(
@@ -172,8 +215,8 @@ function decodeRecordCursor(
     throw new Error("invalid_cursor");
   }
   if (!Array.isArray(parsed) || parsed.length !== 3) throw new Error("invalid_cursor");
-  const [signature, sortValue, id] = parsed as [unknown, unknown, unknown];
-  if (signature !== querySignature(query, collection)) throw new Error("invalid_cursor");
+  const [digest, sortValue, id] = parsed as [unknown, unknown, unknown];
+  if (digest !== queryDigest(query, collection)) throw new Error("invalid_cursor");
   if (typeof id !== "string" || !recordIdPattern.test(id)) throw new Error("invalid_cursor");
   if (sortValue !== null && typeof sortValue !== "string" && typeof sortValue !== "number") {
     throw new Error("invalid_cursor");
@@ -198,12 +241,12 @@ function parseFilters(url: URL): RecordFilter[] {
     if (!(operatorName in operatorSql)) throw new Error("invalid_operator");
     const operator = operatorName as FilterOperator;
     if (!spec.operators.includes(operator)) throw new Error("invalid_operator");
-    const signature = `${field}.${operator}`;
-    if (seen.has(signature)) throw new Error("invalid_filter");
-    seen.add(signature);
+    const seenKey = `${field}.${operator}`;
+    if (seen.has(seenKey)) throw new Error("invalid_filter");
+    seen.add(seenKey);
     filters.push({ field, operator, value: spec.parse(raw) });
   }
-  // Stable order keeps the cursor signature independent of query-string order.
+  // Stable order keeps the cursor digest independent of query-string order.
   return filters.sort((left, right) => `${left.field}.${left.operator}`.localeCompare(`${right.field}.${right.operator}`));
 }
 

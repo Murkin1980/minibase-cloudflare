@@ -54,7 +54,7 @@ charged to the tenant.
 
 ### Verification
 
-`npm run check` PASS: 218 tests across 28 files (177 baseline + 41 new), D1
+`npm run check` PASS: 225 tests across 28 files (177 baseline + 48 new), D1
 integration, migration contract, release readiness, worker integration, and the
 production dry-run build.
 
@@ -77,9 +77,31 @@ before and after.
 The cursor/query binding was mutation-tested: removing the digest check makes
 exactly the intended test fail.
 
-Bundle 71.44 KiB → 81.59 KiB (gzip 14.89 → 17.76 KiB), +10.15 KiB. That is the
-query parser, the allowlists, the statement builder, and the cursor codec; the
-SDK types are erased at build time. No dependency was added.
+### Review fixes applied before merge
+
+1. **Timestamp correctness.** The first pattern accepted a space separator, an
+   arbitrary offset, and — worst — a value with **no** timezone. Since SQLite
+   compares `created_at` / `updated_at` as TEXT and every stored value is
+   canonical UTC from `toISOString()`, a differently-shaped filter value
+   compares lexicographically against a different shape and silently returns
+   wrong rows: `2026-09-01T00:00:00+05:00` sorts *after* `...T00:00:00.000Z` as
+   text while being the earlier instant. Filter values now require an explicit
+   timezone and are normalized to canonical UTC before binding, so equivalent
+   instants produce byte-identical parameters and the same cursor digest.
+   Nonexistent calendar dates are rejected explicitly, because `Date.parse`
+   rolls `2026-02-30` over into March rather than failing. Seven new tests.
+2. **Version bump** to `0.26.0` in `package.json`, `package-lock.json` (which
+   was also stale at `0.24.0`), `/health`, and the worker smoke assertion. The
+   `/v1` namespace is unchanged.
+3. **Cursor terminology.** "Signature" is now "query-consistency digest"
+   throughout code and docs, with the explicit statement that FNV-1a is not a
+   cryptographic signature, the cursor is not authenticated or tamper-proof, and
+   the digest guards against accidental reuse rather than an attacker.
+
+Bundle 71.44 KiB → 82.20 KiB (gzip 14.89 → 17.94 KiB), +10.76 KiB. That is the
+query parser, the allowlists, the statement builder, the timestamp normalizer,
+and the cursor codec; the SDK types are erased at build time. No dependency was
+added.
 
 One query is still **one** D1 REST round trip — asserted directly.
 

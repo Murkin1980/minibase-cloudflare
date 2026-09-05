@@ -184,6 +184,133 @@ describe("CP-04 filtering", () => {
   });
 });
 
+describe("CP-04 timestamp normalization", () => {
+  /** Binds one timestamp filter and returns the value that reaches SQL. */
+  const bound = (field: string, value: string) =>
+    buildRecordStatement("lessons", parseRecordQuery(
+      new URL(`https://minibase.test/v1/data/lessons?filter[${field}]=${encodeURIComponent(value)}`),
+      DEFAULT_LIMITS,
+      "lessons",
+    )).params[1];
+
+  it("normalizes a Z instant to canonical UTC with milliseconds", () => {
+    expect(bound("updatedAt", "2026-09-01T00:00:00Z")).toBe("2026-09-01T00:00:00.000Z");
+    expect(bound("updatedAt", "2026-09-01T12:34:56.7Z")).toBe("2026-09-01T12:34:56.700Z");
+    // An already-canonical value is returned unchanged.
+    expect(bound("updatedAt", "2026-09-01T00:00:00.000Z")).toBe("2026-09-01T00:00:00.000Z");
+  });
+
+  it("converts an offset instant to UTC rather than binding the offset text", () => {
+    expect(bound("updatedAt", "2026-09-01T05:00:00+05:00")).toBe("2026-09-01T00:00:00.000Z");
+    expect(bound("createdAt", "2026-08-31T19:00:00-05:00")).toBe("2026-09-01T00:00:00.000Z");
+  });
+
+  it("gives equivalent instants byte-identical bound values", () => {
+    const spellings = [
+      "2026-09-01T00:00:00Z",
+      "2026-09-01T00:00:00.000Z",
+      "2026-09-01T05:00:00+05:00",
+      "2026-08-31T19:00:00-05:00",
+    ];
+    const values = spellings.map((value) => bound("updatedAt", value));
+    expect(new Set(values).size).toBe(1);
+    expect(values[0]).toBe("2026-09-01T00:00:00.000Z");
+  });
+
+  it("gives equivalent instants the same cursor digest, so paging survives respelling", async () => {
+    harness = setup();
+    seedRaw(harness, "db-a", "lessons", [
+      { id: "rec-1", data: {}, createdAt: "2026-09-02T00:00:00.000Z", updatedAt: "2026-09-02T00:00:00.000Z" },
+      { id: "rec-2", data: {}, createdAt: "2026-09-03T00:00:00.000Z", updatedAt: "2026-09-03T00:00:00.000Z" },
+    ]);
+    const first = await (await harness.request(
+      "/v1/data/lessons?filter[updatedAt.gte]=2026-09-01T00:00:00.000Z&order=updatedAt.asc&limit=1",
+      auth(secretA),
+    )).json() as ListBody;
+    // Same instant, different spelling: the continuation is still accepted.
+    const next = await harness.request(
+      `/v1/data/lessons?filter[updatedAt.gte]=${encodeURIComponent("2026-09-01T05:00:00+05:00")}&order=updatedAt.asc&limit=1&after=${encodeURIComponent(first.nextAfter!)}`,
+      auth(secretA),
+    );
+    expect(next.status).toBe(200);
+    expect(((await next.json()) as ListBody).records.map((record) => record.id)).toEqual(["rec-2"]);
+  });
+
+  it("rejects a timestamp without an explicit timezone", async () => {
+    harness = setup();
+    for (const value of [
+      "2026-09-01T00:00:00",
+      "2026-09-01T00:00:00.000",
+      "2026-09-01 00:00:00Z",
+      "2026-09-01",
+      "2026-09-01T00:00:00+0500",
+      // An unencoded `+` arrives as a space, which is not a timezone. Rejecting
+      // it is better than guessing: the caller gets a deterministic 400 rather
+      // than a filter quietly interpreted in the wrong zone.
+      "2026-09-01T00:00:00 05:00",
+    ]) {
+      const response = await harness.request(
+        `/v1/data/lessons?filter[updatedAt]=${encodeURIComponent(value)}`, auth(secretA),
+      );
+      expect(response.status, value).toBe(400);
+      expect(await response.json()).toEqual({ error: { code: "invalid_filter" } });
+    }
+  });
+
+  it("rejects a calendar date that does not exist instead of rolling it over", async () => {
+    harness = setup();
+    for (const value of [
+      "2026-02-30T00:00:00Z",
+      "2026-13-01T00:00:00Z",
+      "2026-00-10T00:00:00Z",
+      "2025-02-29T00:00:00Z",
+      "2026-09-31T00:00:00Z",
+      "2026-09-01T25:00:00Z",
+    ]) {
+      const response = await harness.request(
+        `/v1/data/lessons?filter[createdAt]=${encodeURIComponent(value)}`, auth(secretA),
+      );
+      expect(response.status, value).toBe(400);
+    }
+    // A real leap day is accepted.
+    expect(bound("createdAt", "2028-02-29T00:00:00Z")).toBe("2028-02-29T00:00:00.000Z");
+  });
+
+  it("filters, orders, and pages correctly across mixed input spellings", async () => {
+    harness = setup();
+    seedRaw(harness, "db-a", "lessons", [
+      { id: "rec-1", data: {}, createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z" },
+      { id: "rec-2", data: {}, createdAt: "2026-09-02T00:00:00.000Z", updatedAt: "2026-09-02T00:00:00.000Z" },
+      { id: "rec-3", data: {}, createdAt: "2026-09-03T00:00:00.000Z", updatedAt: "2026-09-03T00:00:00.000Z" },
+    ]);
+    // `+05:00` is the instant 2026-09-02T00:00:00Z. As raw text it would sort
+    // after every stored `...Z` value and match nothing; normalized, it is a
+    // correct lower bound.
+    const offsetForm = await (await harness.request(
+      `/v1/data/lessons?filter[updatedAt.gte]=${encodeURIComponent("2026-09-02T05:00:00+05:00")}&order=updatedAt.asc`,
+      auth(secretA),
+    )).json() as ListBody;
+    expect(offsetForm.records.map((record) => record.id)).toEqual(["rec-2", "rec-3"]);
+
+    const utcForm = await (await harness.request(
+      "/v1/data/lessons?filter[updatedAt.gte]=2026-09-02T00:00:00.000Z&order=updatedAt.asc", auth(secretA),
+    )).json() as ListBody;
+    expect(utcForm.records.map((record) => record.id)).toEqual(offsetForm.records.map((record) => record.id));
+
+    // Paging a normalized range yields every record exactly once.
+    const seen: string[] = [];
+    let after: string | null = null;
+    for (let page = 0; page < 5; page += 1) {
+      const url = `/v1/data/lessons?filter[createdAt.gte]=${encodeURIComponent("2026-08-31T19:00:00-05:00")}&order=createdAt.asc&limit=1${after ? `&after=${encodeURIComponent(after)}` : ""}`;
+      const body = await (await harness.request(url, auth(secretA))).json() as ListBody;
+      seen.push(...body.records.map((record) => String(record.id)));
+      if (!body.hasMore) break;
+      after = body.nextAfter;
+    }
+    expect(seen).toEqual(["rec-1", "rec-2", "rec-3"]);
+  });
+});
+
 describe("CP-04 ordering and stable keyset pagination", () => {
   it("orders ascending and descending on an allowlisted field", async () => {
     harness = setup();
@@ -406,7 +533,8 @@ describe("CP-04 injection resistance", () => {
     );
     expect(statement.sql).not.toContain("3");
     expect(statement.sql).not.toContain("2026");
-    expect(statement.params).toEqual(["lessons", 3, "2026-09-01T00:00:00Z", 51]);
+    // The timestamp is bound in canonical UTC, not as the caller spelled it.
+    expect(statement.params).toEqual(["lessons", 3, "2026-09-01T00:00:00.000Z", 51]);
     expect(statement.sql).not.toMatch(/OFFSET/i);
   });
 

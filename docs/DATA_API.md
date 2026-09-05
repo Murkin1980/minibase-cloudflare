@@ -84,9 +84,39 @@ GET /v1/data/lessons?filter[schemaVersion]=2&filter[updatedAt.gte]=2026-09-01T00
 | `schemaVersion` | `json_extract(data, '$.schemaVersion')` | `eq` |
 
 The operator defaults to `eq` when omitted. Values are validated by field —
-timestamps must be ISO-8601, `schemaVersion` an integer, `id` a record ID — so a
+`schemaVersion` an integer, `id` a record ID, timestamps as below — so a
 malformed value is a 400 rather than a bound value that silently matches
 nothing. Ranges over `id` are not a filter; that is what the cursor is for.
+
+#### Timestamp values are canonical UTC
+
+`created_at` and `updated_at` are always written by `new Date().toISOString()`,
+so **every stored value is canonical UTC `YYYY-MM-DDTHH:mm:ss.sssZ`**. SQLite
+compares those columns as TEXT, so a filter value in any other representation
+would compare lexicographically against a different shape and silently return
+the wrong rows: `2026-09-01T00:00:00+05:00` sorts *after* `2026-09-01T00:00:00.000Z`
+as text even though it is the earlier instant.
+
+A `createdAt` / `updatedAt` filter value therefore must be an ISO-8601 instant
+**with an explicit timezone**, and is normalized to canonical UTC before it is
+bound:
+
+| Sent | Bound |
+| --- | --- |
+| `2026-09-01T00:00:00Z` | `2026-09-01T00:00:00.000Z` |
+| `2026-09-01T00:00:00.000Z` | `2026-09-01T00:00:00.000Z` |
+| `2026-09-01T05:00:00%2B05:00` | `2026-09-01T00:00:00.000Z` |
+| `2026-08-31T19:00:00-05:00` | `2026-09-01T00:00:00.000Z` |
+
+Equivalent instants therefore produce byte-identical bound values — and the same
+cursor digest, so a page can be continued even if the client respells the same
+timestamp. Rejected with 400 `invalid_filter`: a value with **no** timezone
+(`2026-09-01T00:00:00`), a date-only value, a space separator, a non-ISO offset
+(`+0500`), and a calendar date that does not exist (`2026-02-30`, `2025-02-29`),
+which is rolled over silently by `Date.parse` alone and so is checked explicitly.
+
+Note that `+` must be percent-encoded as `%2B` in a query string; an unencoded
+`+` arrives as a space and is rejected rather than guessed at.
 
 `schemaVersion` is the only JSON field, and it is here because every stored
 document shape MiniBase's consumers use carries one and rolling documents
@@ -114,13 +144,20 @@ unknown name is 400 `invalid_select`, not a silently dropped field.
 | no `filter` and no `order` | the record ID, exactly as before CP-04 |
 | any `filter` or `order` | opaque `mbq1.<base64url>` |
 
-The opaque cursor carries the sort value, the tie-breaker `id`, and a digest of
-the collection, filters, and order that produced it. Pass it back unmodified.
-Anything else — a hand-made cursor, a truncated one, or one issued for a
-different filter, order, or collection — is refused with 400 `invalid_cursor`,
-so a paging client cannot silently receive a page from a different query. The
-digest is a consistency check, not a security control: isolation still comes
-from the key alone, as it always has.
+The opaque cursor carries the sort value, the tie-breaker `id`, and a
+**query-consistency digest** of the collection, filters, and order that produced
+it. Pass it back unmodified. Anything else — a hand-made cursor, a truncated
+one, or one issued for a different filter, order, or collection — is refused
+with 400 `invalid_cursor`, so a paging client cannot silently receive a page
+from a different query.
+
+The digest is FNV-1a. It is **not** a cryptographic signature, the cursor is
+**not** authenticated or tamper-proof, and a caller who wants to can construct
+one that passes the check. That is acceptable because the digest protects
+nothing: it exists to turn an accidentally reused cursor into a deterministic
+400 instead of a wrong page. Isolation still comes from the key alone, as it
+always has, and the `id` and sort value inside a cursor are re-validated and
+bound as parameters on the way in.
 
 ### Errors
 

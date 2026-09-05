@@ -42,7 +42,7 @@ const application = {
     const url = new URL(request.url);
     const limits = resolveLimits(env);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ service: "minibase", status: "ok", version: "0.25.0" });
+      return json({ service: "minibase", status: "ok", version: "0.26.0" });
     }
     if (request.method === "OPTIONS" && /^\/v1\/(data\/|files(?:\/|$))/.test(url.pathname)) {
       return preflightResponse(request);

@@ -101,6 +101,12 @@ updated_at TEXT NOT NULL,
 PRIMARY KEY (collection, id)
 ```
 
+`created_at` and `updated_at` are written by `new Date().toISOString()` and are
+therefore always canonical UTC `YYYY-MM-DDTHH:mm:ss.sssZ`. SQLite compares them
+as TEXT, so that one representation is an invariant, not a convention: CP-04
+query filter values are normalized to the same form before binding (see
+[`DATA_API.md`](DATA_API.md) §Query).
+
 A document store, not a relational table. There are no foreign keys, joins, or
 per-field indexes reachable through the data API. Collections are logical
 partitions inside one physical table, which is what keeps provisioning cheap and
