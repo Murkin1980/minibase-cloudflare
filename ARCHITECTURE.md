@@ -24,13 +24,14 @@ Worker  src/index.ts
    4b. resolve     src/project-quotas.ts  deployment ceilings tightened by the project quota
    5. rate limit   src/abuse-control.ts   per-project bucket {route}:project:{projectId}
    6. origin check src/cors.ts            project_origins allowlist
-   7. execute      src/data-api.ts | src/files-api.ts   under the project's own ceilings
+   7. execute      src/data-api.ts | src/files-api.ts | src/commands.ts
                   src/record-query.ts parses and binds the CP-04 record query
+                  CP-05 uses one static v6 marker/trigger statement
    8. harden       src/response-security.ts
    ▼
 CONTROL_DB (D1 binding)      api.cloudflare.com D1 REST API      R2 (binding)
 projects, api_keys,          one database per project            key = {projectId}/{path}
-management_keys,             mb_records, mb_files, mb_users …
+management_keys,             mb_records, mb_commands, mb_files, mb_users …
 provisioning_jobs,
 audit_events, project_origins
 ```
@@ -46,9 +47,9 @@ together with the conditions for revisiting it.
 
 Consequences that shape the design:
 
-- **`queryProjectD1` posts a single `{sql, params}` per call**, so the data plane
-  as built has no multi-statement transaction — atomicity has to come from
-  single statements;
+- **`queryProjectD1` posts a single `{sql, params}` per call**. CP-05 obtains
+  multi-record atomicity only through one SQLite statement plus its static v6
+  trigger; it does not assume REST batch or multi-statement transaction semantics;
 - **one HTTPS round trip per query**, so round trips must be minimized rather
   than assumed cheap;
 - **the account's D1 quota is shared** across every project, so per-request
@@ -61,7 +62,7 @@ Consequences that shape the design:
 | project → database | `api_keys.key_hash` joins `projects`; the database UUID is never accepted from a request |
 | project → objects | `projectObjectKey()` prefixes every R2 key with the authenticated project ID |
 | browser → writes | publishable keys are limited to `data:read` and `files:read`; write scopes require `mb_secret_*` |
-| caller → SQL | collection, record ID, and file path pass allowlist regexes and are bound as parameters; CP-04 query filter/order/select names come from a static server-side allowlist (`src/record-query.ts`) and values are always bound; arbitrary SQL is never accepted |
+| caller → SQL | collection, record ID, and file path pass allowlist regexes and are bound as parameters; CP-04 query filter/order/select names come from a static server-side allowlist (`src/record-query.ts`); CP-05 accepts one closed payload consumed by a static trigger; arbitrary SQL is never accepted |
 | caller → tenant | browser `Origin` must appear in that project's `project_origins` allowlist |
 | project → ceilings | `projects.quota_*` tightens the deployment limits for that project only, and can never widen them |
 | project → rate budget | one `{route}:project:{projectId}` bucket per project per route class |
@@ -77,9 +78,16 @@ The control plane (`mb_management_*`) owns provisioning, keys, origins, schema
 application, and audit. It writes to `CONTROL_DB` through `batch()`, which is
 atomic.
 
-The data plane (`mb_publishable_*` / `mb_secret_*`) owns records and files. It
-never touches `CONTROL_DB` except to authenticate, and it writes key-activity
-metadata at most once per key per interval rather than per request.
+The data plane (`mb_publishable_*` / `mb_secret_*`) owns records, files, and the
+single CP-05 command. The command route is secret-only and requires
+`Idempotency-Key`; its fresh marker, all record upserts, and replay source live
+in the same project D1. It never sends a project ID from the client, never calls
+a legacy record route internally, and makes exactly one project-D1 REST request
+for execute, replay, or conflict.
+
+The data plane never touches `CONTROL_DB` except to authenticate, look up an
+origin when supplied, and write throttled key-activity metadata at most once per
+key per interval rather than per request.
 
 Per-project quotas are read inside that same authentication join, so a project's
 own ceilings cost no additional control-plane statement. This is the rule CP-03

@@ -7,6 +7,9 @@ describe("API error contract", () => {
     ["request_body_too_large", 413],
     ["content_type_must_be_application_json", 415],
     ["idempotency_key_reused_with_different_request", 409],
+    ["idempotency_conflict", 409],
+    ["command_schema_not_ready", 409],
+    ["bulk_limit_exceeded", 400],
     ["cloudflare_api_error", 502],
     ["invalid_slug", 400],
   ])("maps %s to %s", async (code, status) => {

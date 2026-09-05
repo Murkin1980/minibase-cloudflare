@@ -29,7 +29,7 @@ import { sha256 } from "./security";
 export type RouteClass = "control" | "data" | "files";
 
 export function routeClass(pathname: string): RouteClass {
-  if (pathname.startsWith("/v1/data/")) return "data";
+  if (pathname.startsWith("/v1/data/") || pathname.startsWith("/v1/commands/")) return "data";
   if (pathname.startsWith("/v1/files")) return "files";
   return "control";
 }

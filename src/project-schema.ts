@@ -142,6 +142,93 @@ export const projectSchemaMigrations: ProjectSchemaMigration[] = [
       "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (5, datetime('now'))",
     ],
   },
+  {
+    /**
+     * CP-05 command marker and its one static multi-record-upsert trigger.
+     *
+     * A command arrives as one parameterized INSERT into `mb_commands`. Its
+     * AFTER INSERT trigger expands only the already-validated canonical JSON
+     * payload into `mb_records`, so SQLite commits the marker and every target
+     * record together or rolls the whole statement back. The trigger has no
+     * caller-selected SQL names, paths, or operations. Replays reach the
+     * INSERT's conflict branch instead and never fire this trigger.
+     */
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS mb_commands (
+        command_id TEXT PRIMARY KEY CHECK (length(command_id) BETWEEN 1 AND 64),
+        command_type TEXT NOT NULL CHECK (command_type = 'records:upsert-many'),
+        idempotency_key_hash TEXT NOT NULL
+          CHECK (length(idempotency_key_hash) = 64 AND idempotency_key_hash NOT GLOB '*[^0-9a-f]*'),
+        request_fingerprint TEXT NOT NULL
+          CHECK (length(request_fingerprint) = 64 AND request_fingerprint NOT GLOB '*[^0-9a-f]*'),
+        normalized_payload TEXT NOT NULL
+          CHECK (json_valid(normalized_payload))
+          CHECK (COALESCE(json_type(normalized_payload, '$.operations') = 'array', 0))
+          CHECK (COALESCE(json_array_length(normalized_payload, '$.operations'), 0) BETWEEN 1 AND 1000),
+        response_json TEXT NOT NULL
+          CHECK (json_valid(response_json))
+          CHECK (COALESCE(json_type(response_json) = 'object', 0)),
+        status TEXT NOT NULL CHECK (status = 'completed'),
+        created_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        UNIQUE (command_type, idempotency_key_hash)
+      )`,
+      `CREATE TRIGGER IF NOT EXISTS mb_commands_records_upsert_many_apply
+        AFTER INSERT ON mb_commands
+        WHEN NEW.command_type = 'records:upsert-many'
+        BEGIN
+          -- The table checks reject malformed JSON. Keep the trigger's static
+          -- structural checks as a second boundary so a direct malformed marker
+          -- cannot become a completed no-op command.
+          SELECT CASE WHEN
+            json_valid(NEW.normalized_payload) = 0
+            OR COALESCE(json_type(NEW.normalized_payload, '$.operations') = 'array', 0) = 0
+            OR COALESCE(json_array_length(NEW.normalized_payload, '$.operations'), 0) NOT BETWEEN 1 AND 1000
+            OR EXISTS (
+              SELECT 1 FROM json_each(NEW.normalized_payload) AS root_field
+               WHERE root_field.key <> 'operations'
+            )
+          THEN RAISE(ABORT, 'invalid_command_payload') END;
+          SELECT CASE WHEN EXISTS (
+            SELECT 1
+              FROM json_each(NEW.normalized_payload, '$.operations') AS operation
+             WHERE json_type(operation.value, '$.collection') IS NOT 'text'
+                OR json_type(operation.value, '$.id') IS NOT 'text'
+                OR json_type(operation.value, '$.data') IS NOT 'object'
+                OR EXISTS (
+                  SELECT 1 FROM json_each(operation.value) AS operation_field
+                   WHERE operation_field.key NOT IN ('collection', 'id', 'data')
+                )
+                OR length(json_extract(operation.value, '$.collection')) NOT BETWEEN 2 AND 63
+                OR json_extract(operation.value, '$.collection') NOT GLOB '[a-z]*'
+                OR json_extract(operation.value, '$.collection') GLOB '*[^a-z0-9_-]*'
+                OR substr(json_extract(operation.value, '$.collection'), 1, 3) = 'mb_'
+                OR length(json_extract(operation.value, '$.id')) NOT BETWEEN 1 AND 128
+                OR json_extract(operation.value, '$.id') NOT GLOB '[A-Za-z0-9]*'
+                OR json_extract(operation.value, '$.id') GLOB '*[^A-Za-z0-9._:-]*'
+          ) THEN RAISE(ABORT, 'invalid_command_payload') END;
+          SELECT CASE WHEN EXISTS (
+            SELECT 1
+              FROM json_each(NEW.normalized_payload, '$.operations') AS operation
+             GROUP BY json_extract(operation.value, '$.collection'), json_extract(operation.value, '$.id')
+            HAVING count(*) > 1
+          ) THEN RAISE(ABORT, 'invalid_command_payload') END;
+          INSERT INTO mb_records (collection, id, data, created_at, updated_at)
+          SELECT json_extract(operation.value, '$.collection'),
+                 json_extract(operation.value, '$.id'),
+                 json_extract(operation.value, '$.data'),
+                 NEW.created_at,
+                 NEW.completed_at
+            FROM json_each(NEW.normalized_payload, '$.operations') AS operation
+           WHERE 1
+          ON CONFLICT(collection, id) DO UPDATE SET
+            data = excluded.data,
+            updated_at = excluded.updated_at;
+        END`,
+      "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (6, datetime('now'))",
+    ],
+  },
 ];
 
 export const latestKnownProjectSchemaVersion = projectSchemaMigrations.at(-1)?.version ?? 0;

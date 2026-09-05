@@ -19,7 +19,9 @@
 - per-project квоты, которые могут только сужать лимиты деплоя;
 - отдельные rate-периоды для control, data и files, плюс отдельный rate-bucket
   на проект;
-- fail-closed поведение при отсутствующем или повреждённом project context.
+- fail-closed поведение при отсутствующем или повреждённом project context;
+- CP-05: одна server-side команда атомарного upsert нескольких records с
+  обязательным `Idempotency-Key` и replayable result.
 
 Архитектура описана в [ARCHITECTURE.md](ARCHITECTURE.md). Аудит масштабируемости,
 риски и план checkpoint'ов — в [docs/SCALABILITY.md](docs/SCALABILITY.md).
@@ -90,6 +92,30 @@ database ID и никогда не получает Cloudflare token.
 - `PUT /v1/data/{collection}/{id}` — upsert JSON-объекта (`data:write`);
 - `DELETE /v1/data/{collection}/{id}` — удаление (`data:write`).
 
+### Atomic command (CP-05)
+
+`POST /v1/commands/records:upsert-many` — единственная server-side команда для
+атомарного upsert 1…effective `maxBulkRecords` records одного проекта. Она
+принимает только `mb_secret_*` с `data:write` / `project:admin`, обязательный
+opaque `Idempotency-Key` (до 100 символов) и body
+`{"operations":[{"collection":"tasks","id":"task-1","data":{}}, ...]}`.
+Raw key не сохраняется: в project D1 хранится только SHA-256 digest. Повтор того же
+нормализованного payload возвращает исходный `commandId` с `replayed: true`; тот
+же key с иным payload даёт 409 `idempotency_conflict` без раскрытия key или
+fingerprint.
+
+Одна parameterized SQLite statement создаёт marker v6 `mb_commands`, а static
+trigger применяет все record upsert в одной SQLite atomic boundary. Это ровно
+одно project-D1 REST обращение на execute, replay или conflict; здесь нет REST
+batch, последовательных legacy PUT или client rollback. Сначала existing project
+должен owner-approved мигрировать до v6 через `/schema/apply`; CP-05 сам remote
+schema не применяет. Подробный wire contract и error codes —
+[docs/DATA_API.md](docs/DATA_API.md#commands-cp-05).
+
+Legacy `PUT` и `DELETE` остаются без `Idempotency-Key`: PUT логически
+идемпотентен по финальному document (но обновляет `updatedAt`), DELETE — по
+absent state.
+
 Списки используют keyset-пагинацию: `limit` и `after`, а признак конца —
 поле `hasMore`. `nextAfter` сохраняется для совместимости, но продолжать
 обход следует по `hasMore`.
@@ -133,8 +159,9 @@ Content-Type: application/json
 правкой control D1: некорректное значение игнорируется. `PUT` заменяет весь
 набор, поэтому повтор того же тела идемпотентен. Scope — `projects:write`.
 
-Превышение квоты возвращает уже известные коды: 413 `request_body_too_large`,
-413 `file_too_large`, 400 `invalid_limit`. Новых кодов ошибок квоты не добавляют.
+Превышение `maxJsonBytes`, `maxFileBytes` или `maxPageSize` возвращает прежние
+коды 413 `request_body_too_large`, 413 `file_too_large`, 400 `invalid_limit`.
+CP-05 `maxBulkRecords` для команды возвращает 400 `bulk_limit_exceeded`.
 
 Квоты читаются тем же `api_keys JOIN projects`-запросом, который аутентифицирует
 ключ, поэтому не добавляют ни одного обращения к control D1 на горячем пути.

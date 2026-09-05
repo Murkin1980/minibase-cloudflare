@@ -77,10 +77,10 @@ cache. Returns:
 {
   "projectId": "11111111-1111-4111-8111-111111111111",
   "status": "ok",
-  "authoritativeVersion": 5,
-  "cachedVersion": 5,
-  "latestKnownVersion": 5,
-  "appliedVersions": [1, 2, 3, 4, 5],
+  "authoritativeVersion": 6,
+  "cachedVersion": 6,
+  "latestKnownVersion": 6,
+  "appliedVersions": [1, 2, 3, 4, 5, 6],
   "pendingVersions": [],
   "issues": []
 }
@@ -103,11 +103,11 @@ versions in strict ascending order, updates `mb_schema_versions`, syncs the
 control DB `data_schema_version` cache, and appends an audit event. Returns:
 
 ```json
-{ "previousVersion": 1, "version": 5, "applied": [2, 3, 4, 5] }
+{ "previousVersion": 1, "version": 6, "applied": [2, 3, 4, 5, 6] }
 ```
 
 If the project is already at the latest schema version, it safely returns
-`{ previousVersion: 5, version: 5, applied: [] }` and synchronizes the control
+`{ previousVersion: 6, version: 6, applied: [] }` and synchronizes the control
 cache if it was stale.
 
 If an inconsistent state is detected (e.g., missing version gaps or future
@@ -150,19 +150,43 @@ a no-op.
 Because v5 adds no column, the Worker never depends on it for correctness: a
 tenant still on v4 keeps serving every CP-04 query, just without the index —
 same results, more rows scanned. That is what makes the rollout uncoordinated
-and safe, unlike the CP-06 v5-style change that was deferred precisely because
-it would have added a column.
+and safe, unlike a future coordinated schema change that would add a column.
 
 `src/query-index.test.ts` proves both halves against real SQLite: a v4 database
 holding documents is upgraded to v5 and every row compares equal before and
 after, and each supported query's `EXPLAIN QUERY PLAN` names the index it is
 supposed to use.
 
-**Not applied to any remote or production D1 by this checkpoint.** Rolling v5
-out to a live tenant — including `interactive-kp` — is an explicit, separate
-operational step: run `POST /v1/projects/{projectId}/schema/apply` per project
-and confirm with `/schema/verify`. Until then those tenants stay on v4 and
-continue to work.
+### Project schema v6 (CP-05 atomic command marker)
+
+v6 is forward-only and additive: it creates `mb_commands` and the one static
+`mb_commands_records_upsert_many_apply` trigger, then records version 6 in the
+project database's authoritative `mb_schema_versions` table. It neither alters
+nor rewrites `mb_records`; the trigger is dormant until a fresh CP-05 command
+marker is inserted. Replaying each `CREATE … IF NOT EXISTS` / `INSERT OR IGNORE`
+statement is safe.
+
+The marker stores only the SHA-256 hash of `Idempotency-Key`, never the raw key.
+Its unique `(command_type, idempotency_key_hash)` constraint is scoped naturally
+to the project database. Its static trigger validates fixed JSON paths and
+applies all records in the same SQLite statement as the marker. A partially
+installed v6 cannot serve a command: the one command statement requires both
+v6's authoritative version row and the exact trigger before it can insert.
+
+`src/commands.integration.test.ts` seeds a populated v5 D1 database, applies v6
+twice, and proves pre-existing records remain byte-for-byte unchanged while the
+version record and trigger are installed. The same real-Miniflare suite proves
+one-statement execute/replay/conflict behavior, concurrent winners, and rollback
+on a trigger failure after the first target would otherwise be processed.
+
+**No remote or production project schema was applied by CP-05.** Upgrading a
+live project—including `interactive-kp`—is an explicit owner-approved operating
+step: first inspect `GET /v1/projects/{projectId}/schema/verify`, then run
+`POST /v1/projects/{projectId}/schema/apply`, then verify again. Until that step,
+a v5 project continues serving legacy record routes but CP-05 commands fail
+closed with `command_schema_not_ready` (or generic `cloudflare_api_error` where
+the absent table cannot safely be distinguished). The Worker never performs this
+remote upgrade on a command request and never falls back to legacy PUT writes.
 
 ## Supabase migration packages
 

@@ -11,6 +11,13 @@ const statusByCode: Record<string, number> = {
   request_body_too_large: 413,
   file_too_large: 413,
   idempotency_key_reused_with_different_request: 409,
+  /** CP-05 command idempotency: never expose either fingerprint or key. */
+  idempotency_conflict: 409,
+  /**
+   * The command's one D1 statement verified an incomplete v6 installation
+   * (missing authoritative version row and/or static trigger) without writing.
+   */
+  command_schema_not_ready: 409,
   inconsistent_schema_state: 409,
   cloudflare_api_error: 502,
   rate_limited: 429,
@@ -28,6 +35,8 @@ const clientErrorCodes = new Set([
   "request_body_required",
   "invalid_json",
   "invalid_idempotency_key",
+  "invalid_command",
+  "bulk_limit_exceeded",
   "body_must_be_object",
   "invalid_slug",
   "invalid_name",

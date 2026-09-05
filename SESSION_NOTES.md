@@ -1,5 +1,78 @@
 # MiniBase session notes
 
+## 2026-09-05 — Iteration 39: MiniBase vNext CP-05 atomic records command
+
+Decision remains **EXTEND_EXISTING**: the existing Worker, control D1, shared R2
+bucket, project-D1-per-tenant routing, and D1 REST transport remain in place. No
+repository, backend, database, queue, ORM, workflow engine, production
+Cloudflare resource, deployment, remote schema apply, or `interactive-kp` change
+was made.
+
+### Implemented contract
+
+- Added exactly one command endpoint:
+  `POST /v1/commands/records:upsert-many`.
+- It accepts 1…effective-project-`maxBulkRecords` distinct record operations
+  from a secret `data:write` / secret `project:admin` key only. It accepts no
+  project/database address, raw SQL, SQL fragment, or generic command selector.
+  A defense-in-depth route gate rejects a publishable key even if a malformed
+  legacy control row claims it has a write scope.
+- `Idempotency-Key` is mandatory, opaque, capped at 100 characters, and passed
+  through the existing parser/fingerprint/replay primitives. Only its SHA-256
+  hash is persisted in project D1; the raw key is neither returned nor audited.
+  Payloads differing only in JSON object-key order normalize to the same replay
+  result with the same `commandId` and `replayed: true`; a changed normalized
+  payload receives
+  opaque 409 `idempotency_conflict`.
+- Added forward-only project schema v6: `mb_commands` with practical direct
+  JSON/hash/command constraints and one static
+  `mb_commands_records_upsert_many_apply` trigger. The trigger reads only fixed
+  JSON paths, validates direct marker shape again, preserves `created_at`, uses
+  the command completion timestamp for every `updated_at`, and fires only on a
+  true marker insert.
+- Every execute, matching replay, and conflict is exactly one parameterized
+  `INSERT … SELECT … ON CONFLICT … RETURNING` project-D1 REST request. It is not
+  REST batch, multiple SQL statements, sequential legacy PUT, client rollback,
+  or a generic DSL. The same statement checks the authoritative project
+  `mb_schema_versions` v6 row and exact trigger; a provably incomplete v6
+  returns 409 `command_schema_not_ready`, while an absent table remains generic
+  502 `cloudflare_api_error` rather than falling back.
+- Legacy PUT/DELETE remain unchanged and do not require an idempotency header:
+  PUT is logically idempotent for final document data while its `updatedAt` can
+  advance; DELETE is logically idempotent for the absent state.
+
+### Evidence and verification
+
+- `src/commands.integration.test.ts` uses real Miniflare D1/SQLite through the
+  exact outbound `{ sql, params }` REST envelope. It proves fresh two-record
+  atomic persistence, v5→v6 populated-data preservation and repeat migration,
+  replay without mutation/timestamp change, trigger/table readiness behavior,
+  second-target injected failure rollback and retry, direct marker constraints,
+  concurrent matching replay, and concurrent changed-payload winner/conflict.
+- `src/commands.test.ts` verifies the HTTP route, secret-vs-publishable gate,
+  origin/rate/quota/bounded-input controls, isolation, error envelope, parameter
+  binding, no raw SQL surface, schema fail-closed behavior, and one project-D1
+  request per attempt. `src/client.test.ts` includes runtime and compile-time
+  separation between `MiniBaseClient` and `MiniBaseSecretClient`.
+- `npm run check` **PASS** on 2026-09-05: ESLint, typecheck, 30 Vitest files / 254
+  tests, D1 integration, migration contract (8 control files), release gate,
+  Worker integration, and dry-run build. Bundle: 95.70 KiB / gzip 20.81 KiB,
+  versus the CP-04 baseline 82.20 KiB / gzip 17.94 KiB (+13.50 KiB / +2.87 KiB
+  gzip). Version is `0.27.0`.
+- `git diff --check` **PASS**; a manual added-line credential-pattern and
+  high-entropy scan found only documented placeholders, deterministic test keys,
+  and SQL/trigger identifiers—no credential material. GitHub Actions was not
+  run: the owner’s Actions limit remains exhausted; the local full gate is the
+  repository’s documented official validation path.
+
+### Deliberately not done
+
+- No CP-06 file/artifact schema or behavior, no other command, no REST batch,
+  no dynamic SQL/identifier surface, no remote `schema/apply`, no merge, and no
+  deployment. Existing projects require an explicit owner-approved v6
+  `/schema/apply` before commands can execute; until then they keep legacy route
+  behavior and commands fail closed.
+
 ## 2026-09-05 — Iteration 38: MiniBase vNext CP-04 query + indexes
 
 Decision unchanged: **EXTEND_EXISTING**. No new repository, backend, database,
