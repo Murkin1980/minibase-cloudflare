@@ -1,7 +1,7 @@
 # MPE Scope & Change Control
 
 Status: MANDATORY
-Version: 2026-09-22
+Version: 2026-09-24
 Canonical source: `Murkin1980/murat-project-engineer/docs/governance/SCOPE-CHANGE-CONTROL.md`
 
 This policy defines the default execution discipline for Murat Project Engineer repositories and coding agents.
@@ -275,7 +275,45 @@ As applicable, include:
 
 Do not create duplicate evidence formats when the repository already defines one.
 
-## 21. Merge and deploy authority
+## 21. Change-size and merge-pressure control
+
+Line count is a risk signal, not a productivity target and not a reason to interrupt correct work mid-change.
+
+Measure **meaningful changed lines** as additions + deletions on the current branch/PR relative to its merge base with the default branch.
+
+Exclude from the threshold when they are predominantly mechanical and separately reviewable:
+
+- lock files;
+- generated code or generated artifacts;
+- vendored third-party files;
+- snapshots;
+- large fixtures, captures, datasets, evidence payloads, or compiled/minified output;
+- formatting-only bulk changes.
+
+Do not split coherent code merely to stay below a number. Do not stop in the middle of an atomic edit, migration, schema transition, repair, or verification cycle.
+
+Use these thresholds as merge pressure:
+
+- **0-1,500 meaningful changed lines — NORMAL.** Continue inside the approved scope.
+- **1,500-3,000 — WATCH.** Keep scope tight. Prefer finishing the current atomic task before taking adjacent work.
+- **>=3,000 — MERGE CHECKPOINT.** Do not interrupt the current atomic task. At the next stable, testable boundary, assess integration: run required checks, inspect the diff, and prefer preparing a PR/merge before starting another substantial task or checkpoint.
+- **>=5,000 — STRONG MERGE PRESSURE.** Finish the already-started bounded task and verification, but do not begin a new substantial feature/checkpoint on the same branch unless the owner explicitly approved a larger indivisible change or splitting would increase risk.
+- **>=10,000 meaningful handwritten/semantic lines — EXCEPTION.** Continue only when the change is genuinely indivisible or explicitly approved. Generated/mechanical volume does not by itself trigger this exception.
+
+These thresholds are **not hard stop signals for an external coder who is in the middle of valid work**. The safe sequence is:
+
+1. complete the current atomic operation to a coherent state;
+2. make the state testable and resumable;
+3. run the required verification;
+4. record evidence/handoff;
+5. then integrate, split, or request the required decision before expanding scope.
+
+A checkpoint may be merged while its overall outcome is `BLOCKED` when the completed implementation is coherent, tests/checks pass, unresolved blockers are external or explicitly isolated, and merging does not weaken the default branch.
+
+Changed-file count is a secondary warning signal: around **25+ meaningful files** should prompt the same scope/diff review, but it is not an automatic stop when the files are mechanically related.
+
+Never optimize for a smaller line count by hiding complexity, compressing code, reducing tests, weakening evidence, or combining unrelated concerns.
+## 22. Merge and deploy authority
 
 Successful implementation does not automatically grant merge/deploy authority.
 
@@ -285,7 +323,7 @@ If authority exists, do not ask again after every technical check.
 
 If not, stop at the permitted boundary and preserve evidence.
 
-## 22. Definition of done
+## 23. Definition of done
 
 The task is done when:
 
@@ -301,7 +339,7 @@ The task is done when:
 
 Do not stop at a plan, partial implementation, or the first green test.
 
-## 23. Final report
+## 24. Final report
 
 Report briefly:
 
