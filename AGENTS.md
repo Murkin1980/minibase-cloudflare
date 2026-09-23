@@ -7,7 +7,7 @@ Before planning, coding, refactoring, dependency changes, testing strategy, depl
 
 Read it before project-specific source-of-truth documents. Then follow this repository's local rules and the current checkpoint/spec.
 
-The scope policy governs minimal change, reuse, checkpoint boundaries, deep-change, testing, evidence, merge/deploy authority, and stopping conditions.
+The scope policy governs minimal change, reuse, checkpoint boundaries, deep-change, testing, evidence, change-size/merge-pressure, merge/deploy authority, and stopping conditions.
 
 If a local rule appears to conflict with the scope policy, apply the documented source-of-truth priority. Do not silently weaken either rule; surface a deep-change conflict when required.
 <!-- MPE:SCOPE-CHANGE-CONTROL:END -->
