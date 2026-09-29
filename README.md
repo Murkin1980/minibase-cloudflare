@@ -28,6 +28,11 @@
 Контракт изоляции проектов для потребителей — в
 [docs/PROJECT_ISOLATION.md](docs/PROJECT_ISOLATION.md).
 
+## Эксперименты
+
+Ограниченные исследования новых data/memory-подходов ведутся в
+[`experiments/`](experiments/README.md) и не меняют production-архитектуру MiniBase без отдельного owner-approved checkpoint.
+
 ## Локальная проверка
 
 ```bash
