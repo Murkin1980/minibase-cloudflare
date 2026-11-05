@@ -98,11 +98,22 @@ export interface MiniBaseUpsertManyResponse {
   records: Array<{ collection: string; id: string }>;
   replayed: boolean;
 }
+export interface MiniBaseAllocateSequenceInput<T extends Record<string, unknown> = Record<string, unknown>> {
+  counter: { collection: string; id: string };
+  record: { collection: string; id: string; data: T };
+  sequenceField: string;
+  prefix: string;
+}
+export interface MiniBaseAllocateSequenceResponse {
+  commandId: string; status: "applied";
+  record: { collection: string; id: string }; replayed: boolean;
+}
 
 const collectionPattern = /^[a-z][a-z0-9_-]{1,62}$/;
 const recordIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const filePathPattern = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
 const artifactIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const fieldNamePattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 function validateUpsertManyInput(
   operations: readonly MiniBaseUpsertManyOperation[],
@@ -364,6 +375,16 @@ export class MiniBaseSecretClient extends MiniBaseClient {
       body: JSON.stringify({ operations }),
       headers: { "idempotency-key": idempotencyKey },
     });
+  }
+
+  allocateSequence<T extends Record<string, unknown>>(
+    input: MiniBaseAllocateSequenceInput<T>, idempotencyKey: string,
+  ): Promise<MiniBaseAllocateSequenceResponse> {
+    if (typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > IDEMPOTENCY_KEY_MAX_LENGTH) throw new Error("invalid_idempotency_key");
+    if (!input || typeof input !== "object" || !fieldNamePattern.test(input.sequenceField) || typeof input.prefix !== "string" || input.prefix.length > 128) throw new Error("invalid_command");
+    validateUpsertManyInput([{ ...input.counter, data: {} }, input.record], idempotencyKey);
+    if (input.counter.collection === input.record.collection && input.counter.id === input.record.id) throw new Error("invalid_command");
+    return this.request("/v1/commands/records:allocate-sequence", { method: "POST", body: JSON.stringify(input), headers: { "idempotency-key": idempotencyKey } });
   }
 
   uploadOriginalArtifact(

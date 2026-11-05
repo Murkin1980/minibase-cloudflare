@@ -109,6 +109,21 @@ Run `GET /v1/projects/{projectId}/schema/verify` and owner-approved
 `POST /v1/projects/{projectId}/schema/apply` before enabling this endpoint for an
 existing project. CP-05 does **not** apply remote schema changes itself.
 
+## Sequence allocation (CP-08)
+
+`POST /v1/commands/records:allocate-sequence` is the separate secret-key-only
+command for applications that must allocate a human-facing number while creating
+one record. Its body contains a counter `{ collection, id }`, a target record
+`{ collection, id, data }`, a safe top-level `sequenceField`, and a string
+`prefix`. The static v8 trigger increments (or creates) the counter and writes
+the target record with `prefix + sequence` in that field in one SQLite command.
+It uses the same idempotency rules and secret-key authorization as CP-05.
+
+The response returns the stable record reference, not a predicted number: SQLite
+evaluates `RETURNING` before an `AFTER INSERT` trigger's changes. Read the record
+normally when the rendered number is required. Apply and verify schema v8 before
+enabling this command for an existing project.
+
 ### Command errors
 
 | Condition | HTTP | `error.code` |

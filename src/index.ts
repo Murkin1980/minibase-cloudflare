@@ -3,6 +3,7 @@ import {
   executeRecordsUpsertMany,
   parseRecordsUpsertManyCommand,
 } from "./commands";
+import { executeRecordsAllocateSequence, parseRecordsAllocateSequenceCommand } from "./sequence-command";
 import type { MiniBaseEnv } from "./contracts";
 import { addCorsHeaders, dataOriginIsAllowed, preflightResponse } from "./cors";
 import {
@@ -216,6 +217,19 @@ const application = {
       } catch (error) {
         return errorResponse(error);
       }
+    }
+    if (request.method === "POST" && url.pathname === "/v1/commands/records:allocate-sequence") {
+      try {
+        const principal = await authenticateDataKey(env, request, "data:write", correlationId, limits);
+        if (!principal || principal.kind !== "secret") return errorResponse(new Error("unauthorized"));
+        const projectRate = await inspectProjectRequest(env, "data", principal.projectId);
+        if (projectRate === "unavailable") return errorResponse(new Error("rate_limiter_unavailable"));
+        if (projectRate === "denied") return errorResponse(new Error("rate_limited"));
+        if (!await dataOriginIsAllowed(env, principal.projectId, request)) return errorResponse(new Error("origin_not_allowed"));
+        const idempotencyKey = parseIdempotencyKey(request.headers.get("idempotency-key"));
+        const input = parseRecordsAllocateSequenceCommand(await readJsonBounded(request, principal.limits.maxJsonBytes));
+        return addCorsHeaders(json(await executeRecordsAllocateSequence(env, principal, idempotencyKey, input)), request);
+      } catch (error) { return errorResponse(error); }
     }
     const dataMatch = url.pathname.match(/^\/v1\/data\/([^/]+)(?:\/([^/]+))?$/);
     if (dataMatch) {
