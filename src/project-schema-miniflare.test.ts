@@ -105,13 +105,13 @@ describe("project schema v7 authoritative publication — real SQLite", () => {
     }
     // Retry apply should now succeed (it will handle duplicate ALTERs and insert version 7)
     const result = await applyProjectSchema(env, projectId, actorKeyId);
-    expect(result.version).toBe(7);
+    expect(result.version).toBe(8);
     expect(result.applied).toContain(7);
     const v7After = await db.prepare("SELECT version FROM mb_schema_versions WHERE version = 7").all();
     expect(v7After.results).toHaveLength(1);
     const projAfter = await controlDb.prepare("SELECT data_schema_version FROM projects WHERE id = ?").bind(projectId).first<{ data_schema_version: number }>();
-    expect(projAfter!.data_schema_version).toBe(7);
-  });
+    expect(projAfter!.data_schema_version).toBe(8);
+  }, 30000);
 
   it("partial migration after 1,2,3,4 ALTERs each fails physical and leaves version 7 absent, next apply pending and fix succeeds", async () => {
     const v7 = (await import("./project-schema")).projectSchemaMigrations.find((m) => m.version === 7)!;
@@ -144,11 +144,11 @@ describe("project schema v7 authoritative publication — real SQLite", () => {
       expect(physAfterFix.ok).toBe(true);
       // Now apply should publish version 7 authoritative
       const result = await applyProjectSchema(env, projectId, actorKeyId);
-      expect(result.version).toBe(7);
+      expect(result.version).toBe(8);
       const v7After = await db.prepare("SELECT version FROM mb_schema_versions WHERE version = 7").all();
       expect(v7After.results).toHaveLength(1);
       const projAfter = await controlDb.prepare("SELECT data_schema_version FROM projects WHERE id = ?").bind(projectId).first<{ data_schema_version: number }>();
-      expect(projAfter!.data_schema_version).toBe(7);
+      expect(projAfter!.data_schema_version).toBe(8);
       }
-  }, 15000);
+  }, 30000);
 });

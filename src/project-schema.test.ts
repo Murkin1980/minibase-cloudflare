@@ -21,19 +21,20 @@ describe("project schema migrations contract", () => {
     const versions = projectSchemaMigrations.map((migration) => migration.version);
     expect(versions).toEqual([...versions].sort((left, right) => left - right));
     expect(new Set(versions).size).toBe(versions.length);
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(latestKnownProjectSchemaVersion).toBe(7);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(latestKnownProjectSchemaVersion).toBe(8);
   });
 
   it("plans only missing versions and is idempotent at current", () => {
-    expect(pendingProjectSchemaVersions(0).map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(pendingProjectSchemaVersions(1).map((migration) => migration.version)).toEqual([2, 3, 4, 5, 6, 7]);
-    expect(pendingProjectSchemaVersions(2).map((migration) => migration.version)).toEqual([3, 4, 5, 6, 7]);
-    expect(pendingProjectSchemaVersions(3).map((migration) => migration.version)).toEqual([4, 5, 6, 7]);
-    expect(pendingProjectSchemaVersions(4).map((migration) => migration.version)).toEqual([5, 6, 7]);
-    expect(pendingProjectSchemaVersions(5).map((migration) => migration.version)).toEqual([6, 7]);
-    expect(pendingProjectSchemaVersions(6).map((migration) => migration.version)).toEqual([7]);
-    expect(pendingProjectSchemaVersions(7)).toEqual([]);
+    expect(pendingProjectSchemaVersions(0).map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(pendingProjectSchemaVersions(1).map((migration) => migration.version)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+    expect(pendingProjectSchemaVersions(2).map((migration) => migration.version)).toEqual([3, 4, 5, 6, 7, 8]);
+    expect(pendingProjectSchemaVersions(3).map((migration) => migration.version)).toEqual([4, 5, 6, 7, 8]);
+    expect(pendingProjectSchemaVersions(4).map((migration) => migration.version)).toEqual([5, 6, 7, 8]);
+    expect(pendingProjectSchemaVersions(5).map((migration) => migration.version)).toEqual([6, 7, 8]);
+    expect(pendingProjectSchemaVersions(6).map((migration) => migration.version)).toEqual([7, 8]);
+    expect(pendingProjectSchemaVersions(7).map((migration) => migration.version)).toEqual([8]);
+    expect(pendingProjectSchemaVersions(8)).toEqual([]);
     expect(() => pendingProjectSchemaVersions(-1)).toThrow("invalid_schema_version");
   });
 
@@ -62,14 +63,14 @@ describe("project schema inspection (project DB authoritative)", () => {
         projectId: "proj-1",
         databaseId: "db-1",
         slug: "clean-project",
-        dataSchemaVersion: 7,
-        schemaVersions: [1, 2, 3, 4, 5, 6, 7],
+        dataSchemaVersion: 8,
+        schemaVersions: [1, 2, 3, 4, 5, 6, 7, 8],
       }],
     });
     const state = await inspectProjectSchema(harness.env, "db-1");
     expect(state).toEqual({
-      authoritativeVersion: 7,
-      appliedVersions: [1, 2, 3, 4, 5, 6, 7],
+      authoritativeVersion: 8,
+      appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8],
       hasVersionTable: true,
       issues: [],
     });
@@ -152,18 +153,18 @@ describe("project schema verification (mismatch detection)", () => {
         projectId: "proj-1",
         databaseId: "db-1",
         slug: "clean-project",
-        dataSchemaVersion: 7,
-        schemaVersions: [1, 2, 3, 4, 5, 6, 7],
+        dataSchemaVersion: 8,
+        schemaVersions: [1, 2, 3, 4, 5, 6, 7, 8],
       }],
     });
     const verification = await verifyProjectSchema(harness.env, "proj-1");
     expect(verification).toEqual({
       projectId: "proj-1",
       status: "ok",
-      authoritativeVersion: 7,
-      cachedVersion: 7,
-      latestKnownVersion: 7,
-      appliedVersions: [1, 2, 3, 4, 5, 6, 7],
+      authoritativeVersion: 8,
+      cachedVersion: 8,
+      latestKnownVersion: 8,
+      appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8],
       pendingVersions: [],
       issues: [],
     });
@@ -184,9 +185,9 @@ describe("project schema verification (mismatch detection)", () => {
       status: "ok",
       authoritativeVersion: 5,
       cachedVersion: 5,
-      latestKnownVersion: 7,
+      latestKnownVersion: 8,
       appliedVersions: [1, 2, 3, 4, 5],
-      pendingVersions: [6, 7],
+      pendingVersions: [6, 7, 8],
       issues: [],
     });
   });
@@ -207,9 +208,9 @@ describe("project schema verification (mismatch detection)", () => {
       status: "ok",
       authoritativeVersion: 2,
       cachedVersion: 2,
-      latestKnownVersion: 7,
+      latestKnownVersion: 8,
       appliedVersions: [1, 2],
-      pendingVersions: [3, 4, 5, 6, 7],
+      pendingVersions: [3, 4, 5, 6, 7, 8],
       issues: [],
     });
   });
@@ -229,7 +230,7 @@ describe("project schema verification (mismatch detection)", () => {
     expect(verification.authoritativeVersion).toBe(7);
     expect(verification.cachedVersion).toBe(1);
     expect(verification.issues).toContain("control_version_mismatch");
-    expect(verification.pendingVersions).toEqual([]);
+    expect(verification.pendingVersions).toEqual([8]);
   });
 
   it("detects control metadata mismatch when control DB is ahead of project DB", async () => {
@@ -247,7 +248,7 @@ describe("project schema verification (mismatch detection)", () => {
     expect(verification.authoritativeVersion).toBe(2);
     expect(verification.cachedVersion).toBe(4);
     expect(verification.issues).toContain("control_version_mismatch");
-    expect(verification.pendingVersions).toEqual([3, 4, 5, 6, 7]);
+    expect(verification.pendingVersions).toEqual([3, 4, 5, 6, 7, 8]);
   });
 
   it("detects missing version table when control DB expected version > 0", async () => {
@@ -315,12 +316,12 @@ describe("project schema application", () => {
         projectId: "proj-1",
         databaseId: "db-1",
         slug: "clean-project",
-        dataSchemaVersion: 7,
-        schemaVersions: [1, 2, 3, 4, 5, 6, 7],
+        dataSchemaVersion: 8,
+        schemaVersions: [1, 2, 3, 4, 5, 6, 7, 8],
       }],
     });
     const result = await applyProjectSchema(harness.env, "proj-1", "mgmt-key-1");
-    expect(result).toEqual({ previousVersion: 7, version: 7, applied: [] });
+    expect(result).toEqual({ previousVersion: 8, version: 8, applied: [] });
     // No DDL queries executed on project DB
     const ddlCalls = harness.d1Calls.filter((c) => c.sql.startsWith("CREATE TABLE") || c.sql.startsWith("INSERT"));
     expect(ddlCalls).toHaveLength(0);
@@ -337,12 +338,12 @@ describe("project schema application", () => {
       }],
     });
     const result = await applyProjectSchema(harness.env, "proj-2", "mgmt-key-1", "req-corr-1");
-    expect(result).toEqual({ previousVersion: 2, version: 7, applied: [3, 4, 5, 6, 7] });
+    expect(result).toEqual({ previousVersion: 2, version: 8, applied: [3, 4, 5, 6, 7, 8] });
 
     // Project DB schema versions updated
-    expect(harness.schemaStore.get("db-2")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(harness.schemaStore.get("db-2")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     // Control DB cached version updated
-    expect(harness.projectRows.get("proj-2")?.data_schema_version).toBe(7);
+    expect(harness.projectRows.get("proj-2")?.data_schema_version).toBe(8);
 
     // Audit log records action with correlation ID
     expect(harness.audit).toHaveLength(1);
@@ -355,7 +356,7 @@ describe("project schema application", () => {
     expect(projectId).toBe("proj-2");
     expect(actorKeyId).toBe("mgmt-key-1");
     expect(correlationId).toBe("req-corr-1");
-    expect(JSON.parse(String(metadata))).toEqual({ previousVersion: 2, version: 7, applied: [3, 4, 5, 6, 7] });
+    expect(JSON.parse(String(metadata))).toEqual({ previousVersion: 2, version: 8, applied: [3, 4, 5, 6, 7, 8] });
   });
 
   it("is safe and idempotent on repeated schema apply", async () => {
@@ -369,12 +370,12 @@ describe("project schema application", () => {
       }],
     });
     const first = await applyProjectSchema(harness.env, "proj-rep", "mgmt-key-1");
-    expect(first).toEqual({ previousVersion: 2, version: 7, applied: [3, 4, 5, 6, 7] });
+    expect(first).toEqual({ previousVersion: 2, version: 8, applied: [3, 4, 5, 6, 7, 8] });
 
     const second = await applyProjectSchema(harness.env, "proj-rep", "mgmt-key-1");
-    expect(second).toEqual({ previousVersion: 7, version: 7, applied: [] });
-    expect(harness.schemaStore.get("db-rep")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(harness.projectRows.get("proj-rep")?.data_schema_version).toBe(7);
+    expect(second).toEqual({ previousVersion: 8, version: 8, applied: [] });
+    expect(harness.schemaStore.get("db-rep")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(harness.projectRows.get("proj-rep")?.data_schema_version).toBe(8);
   });
 
   it("synchronizes control DB cache when control DB was behind project DB", async () => {
@@ -388,8 +389,8 @@ describe("project schema application", () => {
       }],
     });
     const result = await applyProjectSchema(harness.env, "proj-behind", "mgmt-key-1");
-    expect(result).toEqual({ previousVersion: 7, version: 7, applied: [] });
-    expect(harness.projectRows.get("proj-behind")?.data_schema_version).toBe(7);
+    expect(result).toEqual({ previousVersion: 7, version: 8, applied: [8] });
+    expect(harness.projectRows.get("proj-behind")?.data_schema_version).toBe(8);
   });
 
   it("applies missing migrations when control DB was ahead of project DB", async () => {
@@ -404,9 +405,9 @@ describe("project schema application", () => {
     });
     // Authority is project DB, so migrations 3 through 7 are applied
     const result = await applyProjectSchema(harness.env, "proj-ahead", "mgmt-key-1");
-    expect(result).toEqual({ previousVersion: 2, version: 7, applied: [3, 4, 5, 6, 7] });
-    expect(harness.schemaStore.get("db-ahead")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(harness.projectRows.get("proj-ahead")?.data_schema_version).toBe(7);
+    expect(result).toEqual({ previousVersion: 2, version: 8, applied: [3, 4, 5, 6, 7, 8] });
+    expect(harness.schemaStore.get("db-ahead")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(harness.projectRows.get("proj-ahead")?.data_schema_version).toBe(8);
   });
 
   it("applies all migrations to an unmigrated clean project without schema table (cached version 0)", async () => {
@@ -421,10 +422,10 @@ describe("project schema application", () => {
       }],
     });
     const result = await applyProjectSchema(harness.env, "proj-clean", "mgmt-key-1");
-    expect(result).toEqual({ previousVersion: 0, version: 7, applied: [1, 2, 3, 4, 5, 6, 7] });
-    expect(harness.schemaStore.get("db-clean")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(result).toEqual({ previousVersion: 0, version: 8, applied: [1, 2, 3, 4, 5, 6, 7, 8] });
+    expect(harness.schemaStore.get("db-clean")?.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(harness.schemaStore.get("db-clean")?.hasTable).toBe(true);
-    expect(harness.projectRows.get("proj-clean")?.data_schema_version).toBe(7);
+    expect(harness.projectRows.get("proj-clean")?.data_schema_version).toBe(8);
   });
 
   it("refuses to apply schema when version table is missing but control DB version > 0 (fail-safe)", async () => {

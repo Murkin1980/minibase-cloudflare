@@ -727,8 +727,8 @@ export async function applyProjectSchema(
     }
   }
 
-  // Execute pending migrations: for <7 incrementally update control, for 7 defer version insertion
-  let v7PhysicalStatementsExecuted = false;
+  // Execute pending migrations in order. v7 is published immediately after its
+  // physical verification so no later migration can create a version gap.
   for (const migration of pending) {
     if (migration.version === 7) {
       // For v7, execute only physical statements (4 ALTERs + CREATE TABLE + 2 indexes), NOT the version INSERT
@@ -738,8 +738,21 @@ export async function applyProjectSchema(
       for (const sql of physicalStatements) {
         await execWithDuplicateHandling(sql);
       }
-      v7PhysicalStatementsExecuted = true;
-      // Do NOT yet insert version 7, do NOT yet update control DB — must verify physical first
+      const physical = await verifyV7PhysicalStructure(env, projectDatabaseId);
+      if (!physical.ok) throw new Error("inconsistent_schema_state");
+      await queryProjectD1(
+        env,
+        projectDatabaseId,
+        "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (7, datetime('now'))",
+        [],
+      );
+      const postState = await inspectProjectSchema(env, projectDatabaseId);
+      if (postState.authoritativeVersion !== 7) throw new Error("inconsistent_schema_state");
+      const ready = await verifyV7Structure(env, projectDatabaseId);
+      if (!ready.ok) throw new Error("inconsistent_schema_state");
+      await env.CONTROL_DB.prepare(
+        "UPDATE projects SET data_schema_version = ?, updated_at = ? WHERE id = ?",
+      ).bind(7, new Date().toISOString(), projectId).run();
       continue;
     }
     // For <7, execute all statements and incrementally update control
@@ -749,31 +762,6 @@ export async function applyProjectSchema(
     await env.CONTROL_DB.prepare(
       "UPDATE projects SET data_schema_version = ?, updated_at = ? WHERE id = ?",
     ).bind(migration.version, new Date().toISOString(), projectId).run();
-  }
-
-  // If v7 was pending, perform exact physical verification BEFORE publishing version 7
-  if (v7PhysicalStatementsExecuted) {
-    const physical = await verifyV7PhysicalStructure(env, projectDatabaseId);
-    if (!physical.ok) {
-      // Physical verification failed: version 7 must NOT be present, control cache unchanged, next apply remains pending
-      throw new Error("inconsistent_schema_state");
-    }
-    // Only after successful physical check, insert authoritative row version 7
-    await queryProjectD1(
-      env,
-      projectDatabaseId,
-      "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (7, datetime('now'))",
-      [],
-    );
-    // Re-check authoritative state
-    const postState = await inspectProjectSchema(env, projectDatabaseId);
-    if (postState.authoritativeVersion !== 7) throw new Error("inconsistent_schema_state");
-    const ready = await verifyV7Structure(env, projectDatabaseId);
-    if (!ready.ok) throw new Error("inconsistent_schema_state");
-    // Only now update control DB cache
-    await env.CONTROL_DB.prepare(
-      "UPDATE projects SET data_schema_version = ?, updated_at = ? WHERE id = ?",
-    ).bind(7, new Date().toISOString(), projectId).run();
   }
 
   const finalVersion = pending.at(-1)?.version ?? previousVersion;
