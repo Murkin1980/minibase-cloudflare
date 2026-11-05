@@ -347,6 +347,47 @@ export const projectSchemaMigrations: ProjectSchemaMigration[] = [
       "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (8, datetime('now'))",
     ],
   },
+  {
+    /** CP-09 preserves legacy padded business numbers while seeding safely in one statement. */
+    version: 9,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS mb_seeded_sequence_commands (
+        command_id TEXT PRIMARY KEY CHECK (length(command_id) BETWEEN 1 AND 64),
+        command_type TEXT NOT NULL CHECK (command_type = 'records:allocate-seeded-sequence'),
+        idempotency_key_hash TEXT NOT NULL CHECK (length(idempotency_key_hash) = 64 AND idempotency_key_hash NOT GLOB '*[^0-9a-f]*'),
+        request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64 AND request_fingerprint NOT GLOB '*[^0-9a-f]*'),
+        normalized_payload TEXT NOT NULL CHECK (json_valid(normalized_payload)),
+        response_json TEXT NOT NULL CHECK (json_valid(response_json)), status TEXT NOT NULL CHECK (status = 'completed'),
+        created_at TEXT NOT NULL, completed_at TEXT NOT NULL, UNIQUE (command_type, idempotency_key_hash)
+      )`,
+      `CREATE TRIGGER IF NOT EXISTS mb_seeded_sequence_commands_allocate_apply
+        AFTER INSERT ON mb_seeded_sequence_commands WHEN NEW.command_type = 'records:allocate-seeded-sequence'
+        BEGIN
+          SELECT CASE WHEN json_valid(NEW.normalized_payload) = 0
+            OR json_type(NEW.normalized_payload, '$.counter.collection') IS NOT 'text' OR json_type(NEW.normalized_payload, '$.counter.id') IS NOT 'text'
+            OR json_type(NEW.normalized_payload, '$.record.collection') IS NOT 'text' OR json_type(NEW.normalized_payload, '$.record.id') IS NOT 'text' OR json_type(NEW.normalized_payload, '$.record.data') IS NOT 'object'
+            OR json_type(NEW.normalized_payload, '$.sequenceField') IS NOT 'text' OR json_type(NEW.normalized_payload, '$.prefix') IS NOT 'text'
+            OR json_type(NEW.normalized_payload, '$.minimumDigits') IS NOT 'integer' OR json_type(NEW.normalized_payload, '$.initialValue') IS NOT 'integer'
+            OR EXISTS (SELECT 1 FROM json_each(NEW.normalized_payload) WHERE key NOT IN ('counter','record','sequenceField','prefix','minimumDigits','initialValue'))
+            OR EXISTS (SELECT 1 FROM json_each(NEW.normalized_payload, '$.counter') WHERE key NOT IN ('collection','id'))
+            OR EXISTS (SELECT 1 FROM json_each(NEW.normalized_payload, '$.record') WHERE key NOT IN ('collection','id','data'))
+            OR length(json_extract(NEW.normalized_payload, '$.counter.collection')) NOT BETWEEN 2 AND 63 OR json_extract(NEW.normalized_payload, '$.counter.collection') NOT GLOB '[a-z]*' OR json_extract(NEW.normalized_payload, '$.counter.collection') GLOB '*[^a-z0-9_-]*' OR substr(json_extract(NEW.normalized_payload, '$.counter.collection'),1,3) = 'mb_'
+            OR length(json_extract(NEW.normalized_payload, '$.record.collection')) NOT BETWEEN 2 AND 63 OR json_extract(NEW.normalized_payload, '$.record.collection') NOT GLOB '[a-z]*' OR json_extract(NEW.normalized_payload, '$.record.collection') GLOB '*[^a-z0-9_-]*' OR substr(json_extract(NEW.normalized_payload, '$.record.collection'),1,3) = 'mb_'
+            OR length(json_extract(NEW.normalized_payload, '$.counter.id')) NOT BETWEEN 1 AND 128 OR json_extract(NEW.normalized_payload, '$.counter.id') NOT GLOB '[A-Za-z0-9]*' OR json_extract(NEW.normalized_payload, '$.counter.id') GLOB '*[^A-Za-z0-9._:-]*'
+            OR length(json_extract(NEW.normalized_payload, '$.record.id')) NOT BETWEEN 1 AND 128 OR json_extract(NEW.normalized_payload, '$.record.id') NOT GLOB '[A-Za-z0-9]*' OR json_extract(NEW.normalized_payload, '$.record.id') GLOB '*[^A-Za-z0-9._:-]*'
+            OR json_extract(NEW.normalized_payload, '$.sequenceField') NOT GLOB '[A-Za-z]*' OR json_extract(NEW.normalized_payload, '$.sequenceField') GLOB '*[^A-Za-z0-9_]*' OR length(json_extract(NEW.normalized_payload, '$.sequenceField')) NOT BETWEEN 1 AND 64
+            OR length(json_extract(NEW.normalized_payload, '$.prefix')) > 128 OR json_extract(NEW.normalized_payload, '$.minimumDigits') NOT BETWEEN 1 AND 9 OR json_extract(NEW.normalized_payload, '$.initialValue') NOT BETWEEN 0 AND 999999999
+          THEN RAISE(ABORT, 'invalid_command_payload') END;
+          SELECT CASE WHEN EXISTS (SELECT 1 FROM mb_records WHERE collection=json_extract(NEW.normalized_payload,'$.counter.collection') AND id=json_extract(NEW.normalized_payload,'$.counter.id') AND (json_type(data,'$.value') IS NOT 'integer' OR json_extract(data,'$.value') < 0)) THEN RAISE(ABORT,'invalid_sequence_counter') END;
+          INSERT INTO mb_records (collection,id,data,created_at,updated_at) VALUES (json_extract(NEW.normalized_payload,'$.counter.collection'),json_extract(NEW.normalized_payload,'$.counter.id'),json_object('value',json_extract(NEW.normalized_payload,'$.initialValue') + 1),NEW.created_at,NEW.completed_at)
+          ON CONFLICT(collection,id) DO UPDATE SET data=json_set(mb_records.data,'$.value',json_extract(mb_records.data,'$.value') + 1),updated_at=excluded.updated_at;
+          INSERT INTO mb_records (collection,id,data,created_at,updated_at)
+          SELECT json_extract(NEW.normalized_payload,'$.record.collection'),json_extract(NEW.normalized_payload,'$.record.id'),json_set(json_extract(NEW.normalized_payload,'$.record.data'),'$.' || json_extract(NEW.normalized_payload,'$.sequenceField'),json_extract(NEW.normalized_payload,'$.prefix') || printf('%0*d',json_extract(NEW.normalized_payload,'$.minimumDigits'),json_extract(data,'$.value'))),NEW.created_at,NEW.completed_at FROM mb_records WHERE collection=json_extract(NEW.normalized_payload,'$.counter.collection') AND id=json_extract(NEW.normalized_payload,'$.counter.id') AND 1
+          ON CONFLICT(collection,id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at;
+        END`,
+      "INSERT OR IGNORE INTO mb_schema_versions (version, applied_at) VALUES (9, datetime('now'))",
+    ],
+  },
 ];
 
 export const latestKnownProjectSchemaVersion = projectSchemaMigrations.at(-1)?.version ?? 0;
